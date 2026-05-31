@@ -154,13 +154,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private boolean showSpawn(Player player) {
-        Optional<StoredPoint> spawn = storage.spawn();
-        if (spawn.isEmpty()) {
-            player.sendMessage(messages.component("spawn-not-set"));
-            return true;
-        }
+        StoredPoint spawn = storage.spawn()
+                .orElseGet(() -> StoredPoint.fromLocation(player.getWorld().getSpawnLocation(), true));
 
-        sendPointMessage(player, "spawn-location", spawn.get(), Map.of());
+        sendPointMessage(player, "spawn-location", spawn, Map.of());
         return true;
     }
 
