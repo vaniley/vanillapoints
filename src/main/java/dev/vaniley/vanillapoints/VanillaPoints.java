@@ -1,270 +1,354 @@
 package dev.vaniley.vanillapoints;
 
-import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
-import org.bukkit.Location;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabCompleter;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
-import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
-import net.md_5.bungee.api.chat.ClickEvent;
-import net.md_5.bungee.api.chat.TextComponent;
-import net.md_5.bungee.api.chat.HoverEvent;
-import net.md_5.bungee.api.chat.hover.content.Text;
 
-import java.io.File;
-import java.util.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-public class VanillaPoints extends JavaPlugin implements Listener, TabCompleter {
+public final class VanillaPoints extends JavaPlugin implements CommandExecutor, TabCompleter {
+    private static final String PERMISSION_SETSPAWN = "vanillapoints.setspawn";
+    private static final String PERMISSION_SETWARP = "vanillapoints.setwarp";
+    private static final String PERMISSION_DELWARP = "vanillapoints.delwarp";
+    private static final String PERMISSION_RELOAD = "vanillapoints.reload";
+    private static final String DEFAULT_COPY_FORMAT = "{x} {y} {z}";
 
-    private Location spawnLocation;
-    private final Map<UUID, Location> playerHomes = new HashMap<>();
-    private final Map<String, Location> warps = new HashMap<>();
-
-    private FileConfiguration messagesConfig;
-    private FileConfiguration dataConfig;
-    private File dataFile;
+    private MessageService messages;
+    private PointStorage storage;
+    private boolean saveImmediately;
+    private String copyFormat;
 
     @Override
     public void onEnable() {
-        loadDataConfig();
-        loadConfigData();
-        loadMessagesConfig();
+        saveDefaultConfig();
+        loadPluginState();
 
-        registerCommand("setspawn", this);
-        registerCommand("spawn", this);
-        registerCommand("sethome", this);
-        registerCommand("home", this);
-        registerCommand("setwarp", this);
-        registerCommand("warp", this);
-        registerCommand("delwarp", this);
-
-        getServer().getPluginManager().registerEvents(this, this);
-        getCommand("warp").setTabCompleter(this);
-    }
-
-    private void registerCommand(String name, Object listener) {
-        Objects.requireNonNull(getCommand(name)).setExecutor((org.bukkit.command.CommandExecutor) listener);
+        registerCommand("setspawn");
+        registerCommand("spawn");
+        registerCommand("sethome");
+        registerCommand("home");
+        registerCommand("setwarp");
+        registerCommand("warp");
+        registerCommand("warps");
+        registerCommand("delwarp");
+        registerCommand("vanillapoints");
     }
 
     @Override
     public void onDisable() {
-        saveConfigData();
+        saveData();
+    }
+
+    private void registerCommand(String name) {
+        PluginCommand command = getCommand(name);
+        if (command == null) {
+            getLogger().severe("Command is missing from plugin.yml: " + name);
+            return;
+        }
+
+        command.setExecutor(this);
+        command.setTabCompleter(this);
+    }
+
+    private void loadPluginState() {
+        reloadConfig();
+
+        saveImmediately = getConfig().getBoolean("settings.save-immediately", true);
+        boolean normalizeToBlock = getConfig().getBoolean("settings.normalize-to-block", true);
+        copyFormat = getConfig().getString("settings.copy-format", DEFAULT_COPY_FORMAT);
+        if (copyFormat == null || copyFormat.isBlank()) {
+            copyFormat = DEFAULT_COPY_FORMAT;
+        }
+
+        messages = new MessageService(this);
+        messages.load();
+
+        storage = new PointStorage(this, normalizeToBlock);
+        storage.load();
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(getColoredMessage("console-error"));
+        String commandName = command.getName().toLowerCase(Locale.ROOT);
+
+        if (commandName.equals("vanillapoints")) {
+            return handlePluginCommand(sender, args);
+        }
+
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(messages.component("console-error"));
             return true;
         }
 
-        Player player = (Player) sender;
-
-        switch (command.getName().toLowerCase()) {
+        switch (commandName) {
             case "setspawn":
-                if (!player.hasPermission("vanillapoints.setspawn")) {
-                    player.sendMessage(getColoredMessage("no-permission"));
-                    return true;
-                }
-                setSpawnLocation(player.getLocation());
-                player.sendMessage(getColoredMessage("spawn-set"));
-                return true;
-
+                return setSpawn(player);
             case "spawn":
-                if (spawnLocation == null) {
-                    player.sendMessage(getColoredMessage("spawn-not-set"));
-                    return true;
-                }
-                sendClickableLocationMessage(player, "spawn-location", spawnLocation);
-                return true;
-
+                return showSpawn(player);
             case "sethome":
-                setHomeLocation(player);
-                player.sendMessage(getColoredMessage("home-set"));
-                return true;
-
+                return setHome(player);
             case "home":
-                Location homeLocation = getHomeLocation(player);
-                if (homeLocation != null) {
-                    sendClickableLocationMessage(player, "home-location", homeLocation);
-                } else {
-                    player.sendMessage(getColoredMessage("home-not-set"));
-                }
-                return true;
-
+                return showHome(player);
             case "setwarp":
-                if (args.length != 1) {
-                    player.sendMessage(getColoredMessage("setwarp-usage"));
-                    return true;
-                }
-                setWarpLocation(args[0], player.getLocation());
-                player.sendMessage(getColoredMessage("warp-set").replace("{warp}", args[0]));
-                return true;
-
+                return setWarp(player, args);
             case "warp":
-                if (args.length != 1) {
-                    player.sendMessage(getColoredMessage("warp-usage"));
-                    return true;
-                }
-                Location warpLocation = getWarpLocation(args[0]);
-                if (warpLocation != null) {
-                    sendClickableLocationMessage(player, "warp-location", warpLocation, args[0]);
-                } else {
-                    player.sendMessage(getColoredMessage("warp-not-set").replace("{warp}", args[0]));
-                }
-                return true;
-
+                return showWarp(player, args);
+            case "warps":
+                return listWarps(player);
             case "delwarp":
-                if (args.length != 1) {
-                    player.sendMessage(getColoredMessage("delwarp-usage"));
-                    return true;
-                }
-                if (deleteWarpLocation(args[0])) {
-                    player.sendMessage(getColoredMessage("warp-deleted").replace("{warp}", args[0]));
-                } else {
-                    player.sendMessage(getColoredMessage("warp-not-set").replace("{warp}", args[0]));
-                }
-                return true;
-
+                return deleteWarp(player, args);
             default:
                 return false;
         }
     }
 
+    private boolean handlePluginCommand(CommandSender sender, String[] args) {
+        if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
+            return reloadPlugin(sender);
+        }
+
+        sender.sendMessage(messages.component("plugin-usage"));
+        return true;
+    }
+
+    private boolean reloadPlugin(CommandSender sender) {
+        if (!ensurePermission(sender, PERMISSION_RELOAD)) {
+            return true;
+        }
+
+        if (!saveData()) {
+            sender.sendMessage(messages.component("data-save-error"));
+            return true;
+        }
+
+        loadPluginState();
+        sender.sendMessage(messages.component("reload-complete"));
+        return true;
+    }
+
+    private boolean setSpawn(Player player) {
+        if (!ensurePermission(player, PERMISSION_SETSPAWN)) {
+            return true;
+        }
+
+        storage.setSpawn(player.getLocation());
+        player.sendMessage(messages.component("spawn-set"));
+        saveDataIfNeeded(player);
+        return true;
+    }
+
+    private boolean showSpawn(Player player) {
+        Optional<StoredPoint> spawn = storage.spawn();
+        if (spawn.isEmpty()) {
+            player.sendMessage(messages.component("spawn-not-set"));
+            return true;
+        }
+
+        sendPointMessage(player, "spawn-location", spawn.get(), Map.of());
+        return true;
+    }
+
+    private boolean setHome(Player player) {
+        storage.setHome(player.getUniqueId(), player.getLocation());
+        player.sendMessage(messages.component("home-set"));
+        saveDataIfNeeded(player);
+        return true;
+    }
+
+    private boolean showHome(Player player) {
+        Optional<StoredPoint> home = storage.home(player.getUniqueId());
+        if (home.isEmpty()) {
+            player.sendMessage(messages.component("home-not-set"));
+            return true;
+        }
+
+        sendPointMessage(player, "home-location", home.get(), Map.of());
+        return true;
+    }
+
+    private boolean setWarp(Player player, String[] args) {
+        if (!ensurePermission(player, PERMISSION_SETWARP)) {
+            return true;
+        }
+
+        if (args.length != 1) {
+            player.sendMessage(messages.component("setwarp-usage"));
+            return true;
+        }
+        if (!isValidWarpName(args[0])) {
+            player.sendMessage(messages.component("invalid-warp-name"));
+            return true;
+        }
+
+        String warpName = PointStorage.normalizeWarpName(args[0]);
+        storage.setWarp(warpName, player.getLocation());
+        player.sendMessage(messages.component("warp-set", Map.of("warp", warpName)));
+        saveDataIfNeeded(player);
+        return true;
+    }
+
+    private boolean showWarp(Player player, String[] args) {
+        if (args.length == 0) {
+            return listWarps(player);
+        }
+
+        if (args.length != 1) {
+            player.sendMessage(messages.component("warp-usage"));
+            return true;
+        }
+        if (!isValidWarpName(args[0])) {
+            player.sendMessage(messages.component("invalid-warp-name"));
+            return true;
+        }
+
+        String warpName = PointStorage.normalizeWarpName(args[0]);
+        Optional<StoredPoint> warp = storage.warp(warpName);
+        if (warp.isEmpty()) {
+            player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            return true;
+        }
+
+        sendPointMessage(player, "warp-location", warp.get(), Map.of("warp", warpName));
+        return true;
+    }
+
+    private boolean deleteWarp(Player player, String[] args) {
+        if (!ensurePermission(player, PERMISSION_DELWARP)) {
+            return true;
+        }
+
+        if (args.length != 1) {
+            player.sendMessage(messages.component("delwarp-usage"));
+            return true;
+        }
+        if (!isValidWarpName(args[0])) {
+            player.sendMessage(messages.component("invalid-warp-name"));
+            return true;
+        }
+
+        String warpName = PointStorage.normalizeWarpName(args[0]);
+        if (!storage.deleteWarp(warpName)) {
+            player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            return true;
+        }
+
+        player.sendMessage(messages.component("warp-deleted", Map.of("warp", warpName)));
+        saveDataIfNeeded(player);
+        return true;
+    }
+
+    private boolean listWarps(CommandSender sender) {
+        Set<String> warpNames = storage.warpNames();
+        if (warpNames.isEmpty()) {
+            sender.sendMessage(messages.component("no-warps"));
+            return true;
+        }
+
+        sender.sendMessage(messages.component("available-warps", Map.of("warps", String.join(", ", warpNames))));
+        return true;
+    }
+
+    private void sendPointMessage(Player player, String messageKey, StoredPoint point, Map<String, String> extraPlaceholders) {
+        Map<String, String> placeholders = new HashMap<>(extraPlaceholders);
+        placeholders.put("x", String.valueOf(point.blockX()));
+        placeholders.put("y", String.valueOf(point.blockY()));
+        placeholders.put("z", String.valueOf(point.blockZ()));
+        placeholders.put("world", point.worldName());
+
+        Component message = LegacyComponentSerializer.legacyAmpersand()
+                .deserialize(messages.text(messageKey, placeholders))
+                .clickEvent(ClickEvent.copyToClipboard(applyPlaceholders(copyFormat, placeholders)))
+                .hoverEvent(HoverEvent.showText(messages.component("coordinates-hover-text")));
+
+        player.sendMessage(message);
+    }
+
+    private boolean isValidWarpName(String name) {
+        return PointStorage.isValidWarpName(name);
+    }
+
+    private boolean ensurePermission(CommandSender sender, String permission) {
+        if (!(sender instanceof Player) || sender.hasPermission(permission)) {
+            return true;
+        }
+
+        sender.sendMessage(messages.component("no-permission"));
+        return false;
+    }
+
+    private String applyPlaceholders(String text, Map<String, String> placeholders) {
+        String result = text;
+        for (Map.Entry<String, String> placeholder : placeholders.entrySet()) {
+            result = result.replace("{" + placeholder.getKey() + "}", placeholder.getValue());
+        }
+        return result;
+    }
+
+    private void saveDataIfNeeded(Player player) {
+        if (!saveImmediately) {
+            return;
+        }
+
+        if (!saveData()) {
+            player.sendMessage(messages.component("data-save-error"));
+        }
+    }
+
+    private boolean saveData() {
+        if (storage == null) {
+            return true;
+        }
+
+        try {
+            storage.save();
+            return true;
+        } catch (IOException exception) {
+            getLogger().severe("Could not save data.yml: " + exception.getMessage());
+            return false;
+        }
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (command.getName().equalsIgnoreCase("warp") && args.length == 1) {
-            return new ArrayList<>(warps.keySet()).stream()
-                    .filter(warp -> warp.toLowerCase().startsWith(args[0].toLowerCase()))
-                    .collect(Collectors.toList());
-        }
-        return Collections.emptyList();
-    }
+        String commandName = command.getName().toLowerCase(Locale.ROOT);
 
-    private void setSpawnLocation(Location location) {
-        this.spawnLocation = location.getBlock().getLocation();
-    }
+        if (commandName.equals("vanillapoints")) {
+            if (args.length != 1 || !sender.hasPermission(PERMISSION_RELOAD)) {
+                return List.of();
+            }
 
-    private void setHomeLocation(Player player) {
-        playerHomes.put(player.getUniqueId(), player.getLocation().getBlock().getLocation());
-    }
-
-    private Location getHomeLocation(Player player) {
-        return playerHomes.get(player.getUniqueId());
-    }
-
-    private void setWarpLocation(String name, Location location) {
-        warps.put(name.toLowerCase(), location.getBlock().getLocation());
-    }
-
-    private Location getWarpLocation(String name) {
-        return warps.get(name.toLowerCase());
-    }
-
-    private boolean deleteWarpLocation(String name) {
-        return warps.remove(name.toLowerCase()) != null;
-    }
-
-    private void sendClickableLocationMessage(Player player, String messageKey, Location location, String... args) {
-        String message = getColoredMessage(messageKey)
-                .replace("{x}", String.valueOf(location.getBlockX()))
-                .replace("{y}", String.valueOf(location.getBlockY()))
-                .replace("{z}", String.valueOf(location.getBlockZ()))
-                .replace("{world}", location.getWorld().getName());
-        if (args.length > 0) {
-            message = message.replace("{warp}", args[0]);
+            String prefix = args[0].toLowerCase(Locale.ROOT);
+            return List.of("reload").stream()
+                    .filter(subCommand -> subCommand.startsWith(prefix))
+                    .collect(Collectors.toCollection(ArrayList::new));
         }
 
-        String coordinatesToCopy = location.getBlockX() + " " + location.getBlockY() + " " + location.getBlockZ();
-
-        TextComponent clickableMessage = new TextComponent(message);
-        clickableMessage.setClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD, coordinatesToCopy));
-        clickableMessage.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                new Text(getColoredMessage("coordinates-hover-text"))));
-
-        player.spigot().sendMessage(clickableMessage);
-    }
-
-    private void loadDataConfig() {
-        dataFile = new File(getDataFolder(), "data.yml");
-        if (!dataFile.exists()) {
-            saveResource("data.yml", false);
+        if (args.length != 1 || (!commandName.equals("warp") && !commandName.equals("delwarp"))) {
+            return List.of();
+        }
+        if (commandName.equals("delwarp") && !sender.hasPermission(PERMISSION_DELWARP)) {
+            return List.of();
         }
 
-        dataConfig = YamlConfiguration.loadConfiguration(dataFile);
-    }
-
-    private void loadConfigData() {
-        if (dataConfig.contains("spawn")) {
-            spawnLocation = getLocationFromConfig(dataConfig, "spawn");
-        }
-        if (dataConfig.contains("homes")) {
-            dataConfig.getConfigurationSection("homes").getKeys(false).forEach(uuidString -> {
-                UUID playerUUID = UUID.fromString(uuidString);
-                playerHomes.put(playerUUID, getLocationFromConfig(dataConfig, "homes." + uuidString));
-            });
-        }
-        if (dataConfig.contains("warps")) {
-            dataConfig.getConfigurationSection("warps").getKeys(false).forEach(warpName -> {
-                Location warpLocation = getLocationFromConfig(dataConfig, "warps." + warpName);
-                if (warpLocation != null) {
-                    warps.put(warpName.toLowerCase(), warpLocation);
-                }
-            });
-        }
-    }
-
-    private void saveConfigData() {
-        if (spawnLocation != null) {
-            saveLocationToConfig(dataConfig, "spawn", spawnLocation);
-        }
-        playerHomes.forEach((key, value) -> saveLocationToConfig(dataConfig, "homes." + key.toString(), value));
-        warps.forEach((key, value) -> saveLocationToConfig(dataConfig, "warps." + key, value));
-        try {
-            dataConfig.save(dataFile);
-        } catch (Exception e) {
-            getLogger().severe("Could not save data to data.yml: " + e.getMessage());
-        }
-    }
-
-    private void saveLocationToConfig(FileConfiguration config, String path, Location location) {
-        config.set(path + ".world", location.getWorld().getName());
-        config.set(path + ".x", location.getX());
-        config.set(path + ".y", location.getY());
-        config.set(path + ".z", location.getZ());
-    }
-
-    private Location getLocationFromConfig(FileConfiguration config, String path) {
-        String worldName = config.getString(path + ".world");
-        if (worldName == null) {
-            return null;
-        }
-        double x = config.getDouble(path + ".x");
-        double y = config.getDouble(path + ".y");
-        double z = config.getDouble(path + ".z");
-        return new Location(Bukkit.getWorld(worldName), x, y, z);
-    }
-
-    private void loadMessagesConfig() {
-        File messagesFile = new File(getDataFolder(), "messages.yml");
-        if (!messagesFile.exists()) {
-            saveResource("messages.yml", false);
-        }
-
-        messagesConfig = YamlConfiguration.loadConfiguration(messagesFile);
-    }
-
-    private String getColoredMessage(String key) {
-        String message = messagesConfig.getString(key);
-        if (message == null) {
-            return ChatColor.RED + "Message not found: " + key;
-        }
-        return ChatColor.translateAlternateColorCodes('&', message);
+        String prefix = args[0].toLowerCase(Locale.ROOT);
+        return storage.warpNames().stream()
+                .filter(warp -> warp.startsWith(prefix))
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 }

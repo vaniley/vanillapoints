@@ -1,0 +1,6 @@
+settings:
+  # Available bundled languages: en, ru.
+  language: en
+  save-immediately: true
+  normalize-to-block: true
+  copy-format: '{x} {y} {z}'

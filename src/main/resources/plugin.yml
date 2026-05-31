@@ -1,13 +1,12 @@
 name: VanillaPoints
-version: 1.0-SNAPSHOT
+version: ${project.version}
 main: dev.vaniley.vanillapoints.VanillaPoints
-api-version: 1.20
+api-version: '1.21'
 
 commands:
   setspawn:
     description: Set the spawn point
     usage: /setspawn
-    permission: vanillapoints.setspawn
   spawn:
     description: Get spawn coordinates
     usage: /spawn
@@ -21,13 +20,29 @@ commands:
     description: Set a warp point
     usage: /setwarp <name>
   warp:
-    description: Get warp point coordinates
-    usage: /warp <name>
+    description: Get warp point coordinates or list warps
+    usage: /warp [name]
+  warps:
+    description: List available warps
+    usage: /warps
   delwarp:
     description: Delete a warp point
     usage: /delwarp <name>
+  vanillapoints:
+    description: VanillaPoints admin command
+    usage: /vanillapoints reload
+    aliases: [vp]
 
 permissions:
   vanillapoints.setspawn:
     description: Allows setting the spawn point
+    default: op
+  vanillapoints.setwarp:
+    description: Allows setting warp points
+    default: op
+  vanillapoints.delwarp:
+    description: Allows deleting warp points
+    default: op
+  vanillapoints.reload:
+    description: Allows reloading VanillaPoints config, messages and data
     default: op
