@@ -150,6 +150,13 @@ final class PointStorage {
         warps.put(normalizeWarpName(name), StoredPoint.fromLocation(location, normalizeToBlock));
     }
 
+    void setWarp(String name, Location location, String description, String icon, String createdBy, long createdAt) {
+        warps.put(
+                normalizeWarpName(name),
+                StoredPoint.fromLocation(location, normalizeToBlock).withMetadata(description, icon, createdBy, createdAt)
+        );
+    }
+
     Optional<StoredPoint> warp(String name) {
         return Optional.ofNullable(warps.get(normalizeWarpName(name)));
     }

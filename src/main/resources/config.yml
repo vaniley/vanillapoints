@@ -4,3 +4,42 @@ settings:
   save-immediately: true
   normalize-to-block: true
   copy-format: '{x} {y} {z}'
+
+feedback:
+  sounds: true
+  particles: true
+  events:
+    home-set:
+      sound: ENTITY_PLAYER_LEVELUP
+      volume: 0.6
+      pitch: 1.4
+      particle: HAPPY_VILLAGER
+      count: 12
+    warp-set:
+      sound: BLOCK_BEACON_ACTIVATE
+      volume: 0.8
+      pitch: 1.0
+      particle: END_ROD
+      count: 16
+
+help:
+  per-page: 7
+  show-hidden-commands: false
+
+cooldowns:
+  default: 2s
+  per-command:
+    home: 3s
+    warp: 2s
+    sethome: 10s
+    setwarp: 10s
+  bypass-permission: vanillapoints.bypass.cooldown
+
+rate-limit:
+  window: 60s
+  max-commands: 30
+
+safety:
+  confirm-deletions: true
+  confirm-ttl: 30s
+  bypass-permission: vanillapoints.bypass.confirm

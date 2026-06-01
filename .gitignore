@@ -2,3 +2,9 @@
 /vanillapoints.iml
 /target
 /.mvn/wrapper/dists
+/.kilo
+/.classpath
+/.factorypath
+/.project
+/.settings
+*.iml

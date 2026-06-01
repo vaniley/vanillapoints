@@ -10,18 +10,22 @@ commands:
   spawn:
     description: Get spawn coordinates
     usage: /spawn
+    aliases: [s]
   sethome:
     description: Set your home point
     usage: /sethome
+    aliases: [sh, setmyhome]
   home:
     description: Get your home coordinates
     usage: /home
+    aliases: [h, myhome]
   setwarp:
     description: Set a warp point
-    usage: /setwarp <name>
+    usage: /setwarp <name> [--icon <material>] [description...]
   warp:
     description: Get warp point coordinates or list warps
     usage: /warp [name]
+    aliases: [w]
   warps:
     description: List available warps
     usage: /warps
@@ -30,7 +34,7 @@ commands:
     usage: /delwarp <name>
   vanillapoints:
     description: VanillaPoints admin command
-    usage: /vanillapoints reload
+    usage: /vanillapoints help [page] or /vanillapoints reload
     aliases: [vp]
 
 permissions:
@@ -45,4 +49,10 @@ permissions:
     default: op
   vanillapoints.reload:
     description: Allows reloading VanillaPoints config, messages and data
+    default: op
+  vanillapoints.bypass.cooldown:
+    description: Bypasses VanillaPoints cooldowns and rate limits
+    default: op
+  vanillapoints.bypass.confirm:
+    description: Bypasses VanillaPoints deletion confirmations
     default: op

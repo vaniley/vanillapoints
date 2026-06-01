@@ -4,6 +4,12 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Particle;
+import org.bukkit.Registry;
+import org.bukkit.Sound;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -13,13 +19,17 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 public final class VanillaPoints extends JavaPlugin implements CommandExecutor, TabCompleter {
@@ -27,7 +37,13 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private static final String PERMISSION_SETWARP = "vanillapoints.setwarp";
     private static final String PERMISSION_DELWARP = "vanillapoints.delwarp";
     private static final String PERMISSION_RELOAD = "vanillapoints.reload";
+    private static final String PERMISSION_BYPASS_COOLDOWN = "vanillapoints.bypass.cooldown";
+    private static final String PERMISSION_BYPASS_CONFIRM = "vanillapoints.bypass.confirm";
     private static final String DEFAULT_COPY_FORMAT = "{x} {y} {z}";
+
+    private final Map<UUID, Map<String, Long>> cooldowns = new HashMap<>();
+    private final Map<UUID, Deque<Long>> commandWindows = new HashMap<>();
+    private final Map<UUID, PendingWarpDeletion> pendingWarpDeletions = new HashMap<>();
 
     private MessageService messages;
     private PointStorage storage;
@@ -81,6 +97,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         storage = new PointStorage(this, normalizeToBlock);
         storage.load();
+        pendingWarpDeletions.clear();
     }
 
     @Override
@@ -110,7 +127,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             case "warp":
                 return showWarp(player, args);
             case "warps":
-                return listWarps(player);
+                return listWarps(player, "warps");
             case "delwarp":
                 return deleteWarp(player, args);
             default:
@@ -119,6 +136,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private boolean handlePluginCommand(CommandSender sender, String[] args) {
+        if (args.length == 0) {
+            return showHelp(sender, new String[]{"help"});
+        }
+
+        if (args[0].equalsIgnoreCase("help")) {
+            return showHelp(sender, args);
+        }
+
         if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
             return reloadPlugin(sender);
         }
@@ -129,6 +154,9 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private boolean reloadPlugin(CommandSender sender) {
         if (!ensurePermission(sender, PERMISSION_RELOAD)) {
+            return true;
+        }
+        if (sender instanceof Player player && !checkCommandLimits(player, "vanillapoints")) {
             return true;
         }
 
@@ -142,8 +170,108 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         return true;
     }
 
+    private boolean showHelp(CommandSender sender, String[] args) {
+        if (args.length > 2) {
+            sender.sendMessage(messages.component("plugin-usage"));
+            return true;
+        }
+
+        int page = 1;
+        if (args.length == 2) {
+            try {
+                page = Integer.parseInt(args[1]);
+            } catch (NumberFormatException exception) {
+                sender.sendMessage(messages.component("help-invalid-page"));
+                return true;
+            }
+        }
+
+        List<HelpEntry> visibleEntries = visibleHelpEntries(sender);
+        if (visibleEntries.isEmpty()) {
+            sender.sendMessage(messages.component("help-no-commands"));
+            return true;
+        }
+
+        int perPage = Math.max(1, getConfig().getInt("help.per-page", 7));
+        int pages = Math.max(1, (visibleEntries.size() + perPage - 1) / perPage);
+        int currentPage = Math.min(Math.max(1, page), pages);
+        int fromIndex = (currentPage - 1) * perPage;
+        int toIndex = Math.min(fromIndex + perPage, visibleEntries.size());
+
+        Map<String, String> pagePlaceholders = Map.of(
+                "page", String.valueOf(currentPage),
+                "pages", String.valueOf(pages)
+        );
+        sender.sendMessage(messages.component("help-header", pagePlaceholders));
+        for (HelpEntry entry : visibleEntries.subList(fromIndex, toIndex)) {
+            sender.sendMessage(messages.component("help-line", Map.of(
+                    "command", entry.command(),
+                    "description", messages.text(entry.descriptionKey())
+            )));
+        }
+        sender.sendMessage(helpFooter(currentPage, pages));
+        return true;
+    }
+
+    private Component helpFooter(int page, int pages) {
+        Component footer = messages.component("help-footer", Map.of(
+                "page", String.valueOf(page),
+                "pages", String.valueOf(pages)
+        ));
+        if (pages <= 1) {
+            return footer;
+        }
+
+        Component result = footer;
+        if (page > 1) {
+            result = result.append(Component.text(" ")).append(helpPageButton("help-prev", page - 1));
+        }
+        if (page < pages) {
+            result = result.append(Component.text(" ")).append(helpPageButton("help-next", page + 1));
+        }
+        return result;
+    }
+
+    private Component helpPageButton(String key, int page) {
+        return messages.component(key)
+                .clickEvent(ClickEvent.runCommand("/vp help " + page))
+                .hoverEvent(HoverEvent.showText(messages.component("help-page-hover", Map.of("page", String.valueOf(page)))));
+    }
+
+    private List<HelpEntry> visibleHelpEntries(CommandSender sender) {
+        boolean showHidden = getConfig().getBoolean("help.show-hidden-commands", false);
+        return helpEntries().stream()
+                .filter(entry -> showHidden || canSeeHelpEntry(sender, entry))
+                .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    private boolean canSeeHelpEntry(CommandSender sender, HelpEntry entry) {
+        if (!(sender instanceof Player)) {
+            return true;
+        }
+        return entry.permission() == null || sender.hasPermission(entry.permission());
+    }
+
+    private List<HelpEntry> helpEntries() {
+        return List.of(
+                new HelpEntry("/spawn", "help-desc-spawn", null),
+                new HelpEntry("/sethome", "help-desc-sethome", null),
+                new HelpEntry("/home", "help-desc-home", null),
+                new HelpEntry("/warp [name]", "help-desc-warp", null),
+                new HelpEntry("/warps", "help-desc-warps", null),
+                new HelpEntry("/setspawn", "help-desc-setspawn", PERMISSION_SETSPAWN),
+                new HelpEntry("/setwarp <name> [--icon <material>] [description...]", "help-desc-setwarp", PERMISSION_SETWARP),
+                new HelpEntry("/delwarp <name>", "help-desc-delwarp", PERMISSION_DELWARP),
+                new HelpEntry("/vp help [page]", "help-desc-vp-help", null),
+                new HelpEntry("/vp reload", "help-desc-vp-reload", PERMISSION_RELOAD)
+        );
+    }
+
     private boolean setSpawn(Player player) {
         if (!ensurePermission(player, PERMISSION_SETSPAWN)) {
+            return true;
+        }
+        if (!checkCommandLimits(player, "setspawn")) {
             return true;
         }
 
@@ -154,6 +282,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private boolean showSpawn(Player player) {
+        if (!checkCommandLimits(player, "spawn")) {
+            return true;
+        }
+
         StoredPoint spawn = storage.spawn()
                 .orElseGet(() -> StoredPoint.fromLocation(player.getWorld().getSpawnLocation(), true));
 
@@ -162,13 +294,22 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private boolean setHome(Player player) {
+        if (!checkCommandLimits(player, "sethome")) {
+            return true;
+        }
+
         storage.setHome(player.getUniqueId(), player.getLocation());
         player.sendMessage(messages.component("home-set"));
+        playFeedback(player, "home-set");
         saveDataIfNeeded(player);
         return true;
     }
 
     private boolean showHome(Player player) {
+        if (!checkCommandLimits(player, "home")) {
+            return true;
+        }
+
         Optional<StoredPoint> home = storage.home(player.getUniqueId());
         if (home.isEmpty()) {
             player.sendMessage(messages.component("home-not-set"));
@@ -184,7 +325,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        if (args.length != 1) {
+        if (args.length < 1) {
             player.sendMessage(messages.component("setwarp-usage"));
             return true;
         }
@@ -193,16 +334,69 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
+        WarpInput input = parseWarpInput(player, args);
+        if (input == null) {
+            return true;
+        }
+        if (!checkCommandLimits(player, "setwarp")) {
+            return true;
+        }
+
         String warpName = PointStorage.normalizeWarpName(args[0]);
-        storage.setWarp(warpName, player.getLocation());
+        storage.setWarp(
+                warpName,
+                player.getLocation(),
+                input.description(),
+                input.icon(),
+                player.getName(),
+                Instant.now().getEpochSecond()
+        );
         player.sendMessage(messages.component("warp-set", Map.of("warp", warpName)));
+        playFeedback(player, "warp-set");
         saveDataIfNeeded(player);
         return true;
     }
 
+    private WarpInput parseWarpInput(Player player, String[] args) {
+        String icon = "";
+        List<String> descriptionParts = new ArrayList<>();
+        for (int index = 1; index < args.length; index++) {
+            String argument = args[index];
+            if (argument.equalsIgnoreCase("--icon")) {
+                if (index + 1 >= args.length) {
+                    player.sendMessage(messages.component("setwarp-usage"));
+                    return null;
+                }
+
+                String rawIcon = args[++index];
+                Optional<String> validatedIcon = validateWarpIcon(rawIcon);
+                if (validatedIcon.isEmpty()) {
+                    player.sendMessage(messages.component("invalid-warp-icon", Map.of("icon", rawIcon)));
+                    return null;
+                }
+                icon = validatedIcon.get();
+            } else {
+                descriptionParts.add(argument);
+            }
+        }
+
+        return new WarpInput(String.join(" ", descriptionParts).trim(), icon);
+    }
+
+    private Optional<String> validateWarpIcon(String icon) {
+        Material material = Material.matchMaterial(icon);
+        if (material == null || material.isLegacy() || material.isAir() || !material.isItem()) {
+            return Optional.empty();
+        }
+        return Optional.of(material.name());
+    }
+
     private boolean showWarp(Player player, String[] args) {
         if (args.length == 0) {
-            return listWarps(player);
+            if (!checkCommandLimits(player, "warp")) {
+                return true;
+            }
+            return sendWarpsList(player);
         }
 
         if (args.length != 1) {
@@ -213,6 +407,9 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             player.sendMessage(messages.component("invalid-warp-name"));
             return true;
         }
+        if (!checkCommandLimits(player, "warp")) {
+            return true;
+        }
 
         String warpName = PointStorage.normalizeWarpName(args[0]);
         Optional<StoredPoint> warp = storage.warp(warpName);
@@ -221,7 +418,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        sendPointMessage(player, "warp-location", warp.get(), Map.of("warp", warpName));
+        StoredPoint point = warp.get();
+        sendPointMessage(player, "warp-location", point, Map.of("warp", warpName));
+        if (!point.description().isBlank()) {
+            player.sendMessage(messages.component("warp-description", Map.of("description", point.description())));
+        }
+        if (!point.icon().isBlank()) {
+            player.sendMessage(messages.component("warp-icon", Map.of("icon", point.icon())));
+        }
         return true;
     }
 
@@ -230,7 +434,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        if (args.length != 1) {
+        removeExpiredPendingDeletions();
+        if (args.length != 1 && args.length != 2) {
             player.sendMessage(messages.component("delwarp-usage"));
             return true;
         }
@@ -240,6 +445,65 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         String warpName = PointStorage.normalizeWarpName(args[0]);
+        if (args.length == 2) {
+            if (args[1].equalsIgnoreCase("confirm")) {
+                return confirmWarpDeletion(player, warpName);
+            }
+            if (args[1].equalsIgnoreCase("cancel")) {
+                return cancelWarpDeletion(player, warpName);
+            }
+
+            player.sendMessage(messages.component("delwarp-usage"));
+            return true;
+        }
+
+        if (!checkCommandLimits(player, "delwarp")) {
+            return true;
+        }
+        if (!getConfig().getBoolean("safety.confirm-deletions", true)
+                || hasConfiguredPermission(player, "safety.bypass-permission", PERMISSION_BYPASS_CONFIRM)) {
+            return deleteWarpNow(player, warpName);
+        }
+        if (storage.warp(warpName).isEmpty()) {
+            player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            return true;
+        }
+
+        long ttlMillis = Math.max(1000L, configDurationMillis("safety.confirm-ttl", "30s"));
+        pendingWarpDeletions.put(player.getUniqueId(), new PendingWarpDeletion(warpName, System.currentTimeMillis() + ttlMillis));
+        sendWarpDeletionPrompt(player, warpName, ttlMillis);
+        return true;
+    }
+
+    private boolean confirmWarpDeletion(Player player, String warpName) {
+        PendingWarpDeletion pendingDeletion = pendingWarpDeletions.get(player.getUniqueId());
+        if (pendingDeletion == null || !pendingDeletion.warpName().equals(warpName)) {
+            player.sendMessage(messages.component("warp-delete-confirm-missing", Map.of("warp", warpName)));
+            return true;
+        }
+        if (pendingDeletion.expiresAtMillis() <= System.currentTimeMillis()) {
+            pendingWarpDeletions.remove(player.getUniqueId());
+            player.sendMessage(messages.component("warp-delete-confirm-expired", Map.of("warp", warpName)));
+            return true;
+        }
+
+        pendingWarpDeletions.remove(player.getUniqueId());
+        return deleteWarpNow(player, warpName);
+    }
+
+    private boolean cancelWarpDeletion(Player player, String warpName) {
+        PendingWarpDeletion pendingDeletion = pendingWarpDeletions.get(player.getUniqueId());
+        if (pendingDeletion == null || !pendingDeletion.warpName().equals(warpName)) {
+            player.sendMessage(messages.component("warp-delete-confirm-missing", Map.of("warp", warpName)));
+            return true;
+        }
+
+        pendingWarpDeletions.remove(player.getUniqueId());
+        player.sendMessage(messages.component("warp-delete-cancelled", Map.of("warp", warpName)));
+        return true;
+    }
+
+    private boolean deleteWarpNow(Player player, String warpName) {
         if (!storage.deleteWarp(warpName)) {
             player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
             return true;
@@ -250,7 +514,29 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         return true;
     }
 
-    private boolean listWarps(CommandSender sender) {
+    private void sendWarpDeletionPrompt(Player player, String warpName, long ttlMillis) {
+        Component prompt = messages.component("warp-delete-confirm-prompt", Map.of(
+                "warp", warpName,
+                "time", formatDuration(ttlMillis)
+        ));
+        Component confirm = messages.component("warp-delete-confirm-button")
+                .clickEvent(ClickEvent.runCommand("/delwarp " + warpName + " confirm"))
+                .hoverEvent(HoverEvent.showText(messages.component("warp-delete-confirm-hover")));
+        Component cancel = messages.component("warp-delete-cancel-button")
+                .clickEvent(ClickEvent.runCommand("/delwarp " + warpName + " cancel"))
+                .hoverEvent(HoverEvent.showText(messages.component("warp-delete-cancel-hover")));
+
+        player.sendMessage(prompt.append(Component.text(" ")).append(confirm).append(Component.text(" ")).append(cancel));
+    }
+
+    private boolean listWarps(Player player, String commandName) {
+        if (!checkCommandLimits(player, commandName)) {
+            return true;
+        }
+        return sendWarpsList(player);
+    }
+
+    private boolean sendWarpsList(CommandSender sender) {
         Set<String> warpNames = storage.warpNames();
         if (warpNames.isEmpty()) {
             sender.sendMessage(messages.component("no-warps"));
@@ -276,6 +562,230 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         player.sendMessage(message);
     }
 
+    private void playFeedback(Player player, String eventKey) {
+        String eventPath = "feedback.events." + eventKey;
+        if (getConfig().getBoolean("feedback.sounds", true)) {
+            playConfiguredSound(player, eventPath);
+        }
+        if (getConfig().getBoolean("feedback.particles", true)) {
+            spawnConfiguredParticle(player, eventPath);
+        }
+    }
+
+    private void playConfiguredSound(Player player, String eventPath) {
+        String soundName = getConfig().getString(eventPath + ".sound", "");
+        if (soundName == null || soundName.isBlank()) {
+            return;
+        }
+
+        NamespacedKey key = soundKey(soundName);
+        Sound sound = key == null ? null : Registry.SOUNDS.get(key);
+        if (sound == null) {
+            getLogger().warning("Invalid feedback sound '" + soundName + "' at " + eventPath + ".sound");
+            return;
+        }
+
+        float volume = (float) Math.max(0.0D, getConfig().getDouble(eventPath + ".volume", 1.0D));
+        float pitch = (float) Math.max(0.01D, getConfig().getDouble(eventPath + ".pitch", 1.0D));
+        player.playSound(player.getLocation(), sound, volume, pitch);
+    }
+
+    private NamespacedKey soundKey(String soundName) {
+        String normalized = soundName.trim().toLowerCase(Locale.ROOT).replace('_', '.');
+        try {
+            if (normalized.contains(":")) {
+                return NamespacedKey.fromString(normalized);
+            }
+            return NamespacedKey.minecraft(normalized);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private void spawnConfiguredParticle(Player player, String eventPath) {
+        String particleName = getConfig().getString(eventPath + ".particle", "");
+        if (particleName == null || particleName.isBlank()) {
+            return;
+        }
+
+        try {
+            Particle particle = Particle.valueOf(particleName.toUpperCase(Locale.ROOT));
+            if (particle.getDataType() != Void.class) {
+                getLogger().warning("Feedback particle '" + particleName + "' at " + eventPath
+                        + ".particle requires data and was skipped.");
+                return;
+            }
+
+            int count = Math.max(0, getConfig().getInt(eventPath + ".count", 8));
+            if (count == 0) {
+                return;
+            }
+
+            Location location = player.getLocation().add(0.0D, 1.0D, 0.0D);
+            player.spawnParticle(particle, location, count, 0.35D, 0.45D, 0.35D);
+        } catch (IllegalArgumentException exception) {
+            getLogger().warning("Invalid feedback particle '" + particleName + "' at " + eventPath + ".particle");
+        }
+    }
+
+    private boolean checkCommandLimits(Player player, String commandName) {
+        if (hasConfiguredPermission(player, "cooldowns.bypass-permission", PERMISSION_BYPASS_COOLDOWN)) {
+            return true;
+        }
+
+        long now = System.currentTimeMillis();
+        if (!checkRateLimit(player, now)) {
+            return false;
+        }
+
+        long cooldownMillis = cooldownMillis(commandName);
+        if (cooldownMillis > 0L) {
+            Long lastUsedAt = cooldowns
+                    .getOrDefault(player.getUniqueId(), Map.of())
+                    .get(commandName);
+            if (lastUsedAt != null) {
+                long remainingMillis = cooldownMillis - (now - lastUsedAt);
+                if (remainingMillis > 0L) {
+                    player.sendMessage(messages.component("cooldown-active", Map.of("time", formatDuration(remainingMillis))));
+                    return false;
+                }
+            }
+        }
+
+        recordCommandUsage(player.getUniqueId(), commandName, now, cooldownMillis);
+        return true;
+    }
+
+    private boolean checkRateLimit(Player player, long now) {
+        long windowMillis = configDurationMillis("rate-limit.window", "60s");
+        int maxCommands = getConfig().getInt("rate-limit.max-commands", 30);
+        if (windowMillis <= 0L || maxCommands <= 0) {
+            return true;
+        }
+
+        Deque<Long> window = commandWindows.computeIfAbsent(player.getUniqueId(), ignored -> new ArrayDeque<>());
+        pruneCommandWindow(window, now, windowMillis);
+        if (window.size() >= maxCommands) {
+            Long oldestCommandAt = window.peekFirst();
+            long remainingMillis = oldestCommandAt == null ? windowMillis : oldestCommandAt + windowMillis - now;
+            player.sendMessage(messages.component("rate-limit-active", Map.of("time", formatDuration(Math.max(1L, remainingMillis)))));
+            return false;
+        }
+        return true;
+    }
+
+    private void pruneCommandWindow(Deque<Long> window, long now, long windowMillis) {
+        while (!window.isEmpty() && now - window.peekFirst() >= windowMillis) {
+            window.removeFirst();
+        }
+    }
+
+    private void recordCommandUsage(UUID playerId, String commandName, long now, long cooldownMillis) {
+        long windowMillis = configDurationMillis("rate-limit.window", "60s");
+        int maxCommands = getConfig().getInt("rate-limit.max-commands", 30);
+        if (windowMillis > 0L && maxCommands > 0) {
+            commandWindows.computeIfAbsent(playerId, ignored -> new ArrayDeque<>()).addLast(now);
+        }
+        if (cooldownMillis > 0L) {
+            cooldowns.computeIfAbsent(playerId, ignored -> new HashMap<>()).put(commandName, now);
+        }
+        pruneCommandLimits(playerId, now);
+    }
+
+    private void pruneCommandLimits(UUID playerId, long now) {
+        long windowMillis = configDurationMillis("rate-limit.window", "60s");
+        Deque<Long> window = commandWindows.get(playerId);
+        if (window != null) {
+            pruneCommandWindow(window, now, windowMillis);
+            if (window.isEmpty()) {
+                commandWindows.remove(playerId);
+            }
+        }
+
+        Map<String, Long> playerCooldowns = cooldowns.get(playerId);
+        if (playerCooldowns != null) {
+            playerCooldowns.entrySet().removeIf(entry -> now - entry.getValue() >= cooldownMillis(entry.getKey()));
+            if (playerCooldowns.isEmpty()) {
+                cooldowns.remove(playerId);
+            }
+        }
+    }
+
+    private long cooldownMillis(String commandName) {
+        long defaultMillis = configDurationMillis("cooldowns.default", "2s");
+        return configDurationMillis("cooldowns.per-command." + commandName, defaultMillis);
+    }
+
+    private long configDurationMillis(String path, String defaultValue) {
+        return configDurationMillis(path, parseDurationMillis(defaultValue, 0L));
+    }
+
+    private long configDurationMillis(String path, long defaultMillis) {
+        Object value = getConfig().get(path);
+        if (value == null) {
+            return defaultMillis;
+        }
+        return parseDurationMillis(value, defaultMillis);
+    }
+
+    private long parseDurationMillis(Object value, long defaultMillis) {
+        if (value instanceof Number number) {
+            return Math.max(0L, Math.round(number.doubleValue() * 1000.0D));
+        }
+
+        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
+        if (text.isBlank()) {
+            return defaultMillis;
+        }
+
+        long multiplier = 1000L;
+        String numberText = text;
+        if (text.endsWith("ms")) {
+            multiplier = 1L;
+            numberText = text.substring(0, text.length() - 2);
+        } else if (text.endsWith("s")) {
+            multiplier = 1000L;
+            numberText = text.substring(0, text.length() - 1);
+        } else if (text.endsWith("m")) {
+            multiplier = 60_000L;
+            numberText = text.substring(0, text.length() - 1);
+        } else if (text.endsWith("h")) {
+            multiplier = 3_600_000L;
+            numberText = text.substring(0, text.length() - 1);
+        }
+
+        try {
+            double amount = Double.parseDouble(numberText.trim());
+            return Math.max(0L, (long) Math.ceil(amount * multiplier));
+        } catch (NumberFormatException exception) {
+            getLogger().warning("Invalid duration value '" + value + "', using default " + formatDuration(defaultMillis) + ".");
+            return defaultMillis;
+        }
+    }
+
+    private String formatDuration(long millis) {
+        if (millis < 1000L) {
+            return millis + "ms";
+        }
+
+        long seconds = (millis + 999L) / 1000L;
+        if (seconds < 60L) {
+            return seconds + "s";
+        }
+
+        long minutes = seconds / 60L;
+        long remainingSeconds = seconds % 60L;
+        if (remainingSeconds == 0L) {
+            return minutes + "m";
+        }
+        return minutes + "m " + remainingSeconds + "s";
+    }
+
+    private void removeExpiredPendingDeletions() {
+        long now = System.currentTimeMillis();
+        pendingWarpDeletions.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
+    }
+
     private boolean isValidWarpName(String name) {
         return PointStorage.isValidWarpName(name);
     }
@@ -287,6 +797,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         sender.sendMessage(messages.component("no-permission"));
         return false;
+    }
+
+    private boolean hasConfiguredPermission(Player player, String path, String defaultPermission) {
+        String permission = getConfig().getString(path, defaultPermission);
+        return permission != null && !permission.isBlank() && player.hasPermission(permission);
     }
 
     private String applyPlaceholders(String text, Map<String, String> placeholders) {
@@ -326,26 +841,78 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         String commandName = command.getName().toLowerCase(Locale.ROOT);
 
         if (commandName.equals("vanillapoints")) {
-            if (args.length != 1 || !sender.hasPermission(PERMISSION_RELOAD)) {
-                return List.of();
+            return completePluginCommand(sender, args);
+        }
+        if (commandName.equals("setwarp")) {
+            return completeSetWarp(args);
+        }
+        if (commandName.equals("warp")) {
+            return completeWarpNames(args);
+        }
+        if (commandName.equals("delwarp")) {
+            return completeDeleteWarp(sender, args);
+        }
+
+        return List.of();
+    }
+
+    private List<String> completePluginCommand(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            List<String> completions = new ArrayList<>();
+            completions.add("help");
+            if (sender.hasPermission(PERMISSION_RELOAD)) {
+                completions.add("reload");
             }
-
-            String prefix = args[0].toLowerCase(Locale.ROOT);
-            return List.of("reload").stream()
-                    .filter(subCommand -> subCommand.startsWith(prefix))
-                    .collect(Collectors.toCollection(ArrayList::new));
+            return filterByPrefix(completions, args[0]);
         }
+        return List.of();
+    }
 
-        if (args.length != 1 || (!commandName.equals("warp") && !commandName.equals("delwarp"))) {
+    private List<String> completeSetWarp(String[] args) {
+        if (args.length == 2 && "--icon".startsWith(args[1].toLowerCase(Locale.ROOT))) {
+            return List.of("--icon");
+        }
+        return List.of();
+    }
+
+    private List<String> completeWarpNames(String[] args) {
+        if (args.length != 1) {
             return List.of();
         }
-        if (commandName.equals("delwarp") && !sender.hasPermission(PERMISSION_DELWARP)) {
+        return filterByPrefix(new ArrayList<>(storage.warpNames()), args[0]);
+    }
+
+    private List<String> completeDeleteWarp(CommandSender sender, String[] args) {
+        if (!sender.hasPermission(PERMISSION_DELWARP)) {
             return List.of();
         }
 
-        String prefix = args[0].toLowerCase(Locale.ROOT);
-        return storage.warpNames().stream()
-                .filter(warp -> warp.startsWith(prefix))
+        if (args.length == 1) {
+            return completeWarpNames(args);
+        }
+        if (args.length == 2 && sender instanceof Player player && isValidWarpName(args[0])) {
+            PendingWarpDeletion pendingDeletion = pendingWarpDeletions.get(player.getUniqueId());
+            if (pendingDeletion != null && pendingDeletion.warpName().equals(PointStorage.normalizeWarpName(args[0]))
+                    && pendingDeletion.expiresAtMillis() > System.currentTimeMillis()) {
+                return filterByPrefix(List.of("confirm", "cancel"), args[1]);
+            }
+        }
+        return List.of();
+    }
+
+    private List<String> filterByPrefix(List<String> values, String prefix) {
+        String normalizedPrefix = prefix.toLowerCase(Locale.ROOT);
+        return values.stream()
+                .filter(value -> value.toLowerCase(Locale.ROOT).startsWith(normalizedPrefix))
                 .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    private record PendingWarpDeletion(String warpName, long expiresAtMillis) {
+    }
+
+    private record HelpEntry(String command, String descriptionKey, String permission) {
+    }
+
+    private record WarpInput(String description, String icon) {
     }
 }
