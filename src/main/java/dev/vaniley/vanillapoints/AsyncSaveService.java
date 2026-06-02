@@ -128,7 +128,7 @@ final class AsyncSaveService {
         Bukkit.getScheduler().runTask(plugin, () -> {
             Player player = Bukkit.getPlayer(playerId);
             if (player != null && player.isOnline()) {
-                player.sendMessage(messages.component("data-save-error"));
+                player.sendMessage(messages.component(player, "data-save-error"));
             }
         });
     }

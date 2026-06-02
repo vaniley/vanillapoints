@@ -2,6 +2,7 @@ name: VanillaPoints
 version: ${project.version}
 main: dev.vaniley.vanillapoints.VanillaPoints
 api-version: '1.21'
+softdepend: [PlaceholderAPI]
 
 commands:
   setspawn:
@@ -56,3 +57,33 @@ permissions:
   vanillapoints.bypass.confirm:
     description: Bypasses VanillaPoints deletion confirmations
     default: op
+  vanillapoints.lang.en:
+    description: Uses English messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.ru:
+    description: Uses Russian messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.uk:
+    description: Uses Ukrainian messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.es:
+    description: Uses Spanish messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.de:
+    description: Uses German messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.fr:
+    description: Uses French messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.zh:
+    description: Uses Simplified Chinese messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.ja:
+    description: Uses Japanese messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.pt:
+    description: Uses Portuguese messages when per-player language permissions are enabled
+    default: false
+  vanillapoints.lang.pl:
+    description: Uses Polish messages when per-player language permissions are enabled
+    default: false

@@ -68,12 +68,14 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
 
     @Override
     public boolean setWarp(String name, Location location, PointMetadata metadata) {
-        return location != null && points.setWarp(null, name, location, metadata) == PointMutationResult.SUCCESS;
+        return PointStorage.isValidWarpName(name)
+                && location != null
+                && points.setWarp(null, name, location, metadata) == PointMutationResult.SUCCESS;
     }
 
     @Override
     public boolean deleteWarp(String name) {
-        return points.deleteWarp(null, name) == PointMutationResult.SUCCESS;
+        return PointStorage.isValidWarpName(name) && points.deleteWarp(null, name) == PointMutationResult.SUCCESS;
     }
 
     @Override

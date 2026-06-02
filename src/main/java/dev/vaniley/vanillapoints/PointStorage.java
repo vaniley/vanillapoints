@@ -38,6 +38,9 @@ interface PointStorage extends AutoCloseable {
     }
 
     static String normalizeWarpName(String name) {
+        if (name == null) {
+            return "";
+        }
         return name.toLowerCase(Locale.ROOT);
     }
 

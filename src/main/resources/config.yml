@@ -1,11 +1,17 @@
 settings:
-  # Available bundled languages: en, ru.
+  # Available bundled languages: en, ru, uk, es, de, fr, zh, ja, pt, pl.
   language: en
+  # When enabled, players with vanillapoints.lang.<code> receive messages in that language.
+  per-player-permissions: false
   # When enabled, changes are queued for async persistence immediately after commands/API mutations.
   # When disabled, data is flushed during /vp reload and plugin shutdown.
   save-immediately: true
   normalize-to-block: true
   copy-format: '{x} {y} {z}'
+
+placeholders:
+  empty-value: ''
+  warp-list-separator: ', '
 
 storage:
   backend: yaml # yaml | sqlite | mysql

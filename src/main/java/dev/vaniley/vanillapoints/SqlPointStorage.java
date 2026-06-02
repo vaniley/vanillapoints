@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -119,6 +120,11 @@ abstract class SqlPointStorage extends AbstractPointStorage {
                     + ")");
         }
 
+        addColumnIfMissing(connection, "description", "TEXT");
+        addColumnIfMissing(connection, "icon", "VARCHAR(64)");
+        addColumnIfMissing(connection, "created_by", "VARCHAR(64)");
+        addColumnIfMissing(connection, "created_at", "BIGINT NOT NULL DEFAULT 0");
+
         try (Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery("SELECT COUNT(*) FROM vanillapoints_schema")) {
             if (resultSet.next() && resultSet.getInt(1) == 0) {
@@ -126,6 +132,28 @@ abstract class SqlPointStorage extends AbstractPointStorage {
                     insertStatement.executeUpdate("INSERT INTO vanillapoints_schema (version) VALUES (1)");
                 }
             }
+        }
+    }
+
+    private void addColumnIfMissing(Connection connection, String columnName, String definition) throws SQLException {
+        if (hasColumn(connection, columnName)) {
+            return;
+        }
+
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("ALTER TABLE vanillapoints_points ADD COLUMN " + columnName + " " + definition);
+        }
+    }
+
+    private boolean hasColumn(Connection connection, String columnName) throws SQLException {
+        DatabaseMetaData metaData = connection.getMetaData();
+        try (ResultSet resultSet = metaData.getColumns(null, null, "vanillapoints_points", columnName)) {
+            if (resultSet.next()) {
+                return true;
+            }
+        }
+        try (ResultSet resultSet = metaData.getColumns(null, null, "VANILLAPOINTS_POINTS", columnName.toUpperCase())) {
+            return resultSet.next();
         }
     }
 

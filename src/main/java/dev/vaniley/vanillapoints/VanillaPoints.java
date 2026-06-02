@@ -53,6 +53,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private AsyncSaveService saveService;
     private PointService points;
     private VanillaPointsApiProvider apiProvider;
+    private PlaceholderApiIntegration placeholderApiIntegration;
     private boolean saveImmediately;
     private boolean normalizeToBlock;
     private String copyFormat;
@@ -75,6 +76,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public void onDisable() {
+        unregisterPlaceholderApi();
         unregisterApi();
         flushAndCloseStorage();
     }
@@ -91,6 +93,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private void loadPluginState() {
+        unregisterPlaceholderApi();
         reloadConfig();
 
         saveImmediately = getConfig().getBoolean("settings.save-immediately", true);
@@ -108,7 +111,29 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         saveService = new AsyncSaveService(this, storage, messages);
         points = new PointService(this, storage, saveService, normalizeToBlock, saveImmediately);
         registerApi();
+        registerPlaceholderApi();
         pendingWarpDeletions.clear();
+    }
+
+    private void registerPlaceholderApi() {
+        if (!getServer().getPluginManager().isPluginEnabled("PlaceholderAPI")) {
+            return;
+        }
+
+        placeholderApiIntegration = new PlaceholderApiIntegration(this, points);
+        if (!placeholderApiIntegration.register()) {
+            placeholderApiIntegration = null;
+            getLogger().warning("Could not register PlaceholderAPI expansion.");
+        }
+    }
+
+    private void unregisterPlaceholderApi() {
+        if (placeholderApiIntegration == null) {
+            return;
+        }
+
+        placeholderApiIntegration.unregister();
+        placeholderApiIntegration = null;
     }
 
     private void registerApi() {
@@ -145,7 +170,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(messages.component("console-error"));
+            sender.sendMessage(messages.component(sender, "console-error"));
             return true;
         }
 
@@ -184,7 +209,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return reloadPlugin(sender);
         }
 
-        sender.sendMessage(messages.component("plugin-usage"));
+        sender.sendMessage(messages.component(sender, "plugin-usage"));
         return true;
     }
 
@@ -197,18 +222,18 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         if (!flushBeforeReload()) {
-            sender.sendMessage(messages.component("data-save-error"));
+            sender.sendMessage(messages.component(sender, "data-save-error"));
             return true;
         }
 
         loadPluginState();
-        sender.sendMessage(messages.component("reload-complete"));
+        sender.sendMessage(messages.component(sender, "reload-complete"));
         return true;
     }
 
     private boolean showHelp(CommandSender sender, String[] args) {
         if (args.length > 2) {
-            sender.sendMessage(messages.component("plugin-usage"));
+            sender.sendMessage(messages.component(sender, "plugin-usage"));
             return true;
         }
 
@@ -217,14 +242,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             try {
                 page = Integer.parseInt(args[1]);
             } catch (NumberFormatException exception) {
-                sender.sendMessage(messages.component("help-invalid-page"));
+                sender.sendMessage(messages.component(sender, "help-invalid-page"));
                 return true;
             }
         }
 
         List<HelpEntry> visibleEntries = visibleHelpEntries(sender);
         if (visibleEntries.isEmpty()) {
-            sender.sendMessage(messages.component("help-no-commands"));
+            sender.sendMessage(messages.component(sender, "help-no-commands"));
             return true;
         }
 
@@ -238,19 +263,19 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 "page", String.valueOf(currentPage),
                 "pages", String.valueOf(pages)
         );
-        sender.sendMessage(messages.component("help-header", pagePlaceholders));
+        sender.sendMessage(messages.component(sender, "help-header", pagePlaceholders));
         for (HelpEntry entry : visibleEntries.subList(fromIndex, toIndex)) {
-            sender.sendMessage(messages.component("help-line", Map.of(
+            sender.sendMessage(messages.component(sender, "help-line", Map.of(
                     "command", entry.command(),
-                    "description", messages.text(entry.descriptionKey())
+                    "description", messages.text(sender, entry.descriptionKey())
             )));
         }
-        sender.sendMessage(helpFooter(currentPage, pages));
+        sender.sendMessage(helpFooter(sender, currentPage, pages));
         return true;
     }
 
-    private Component helpFooter(int page, int pages) {
-        Component footer = messages.component("help-footer", Map.of(
+    private Component helpFooter(CommandSender sender, int page, int pages) {
+        Component footer = messages.component(sender, "help-footer", Map.of(
                 "page", String.valueOf(page),
                 "pages", String.valueOf(pages)
         ));
@@ -260,18 +285,18 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         Component result = footer;
         if (page > 1) {
-            result = result.append(Component.text(" ")).append(helpPageButton("help-prev", page - 1));
+            result = result.append(Component.text(" ")).append(helpPageButton(sender, "help-prev", page - 1));
         }
         if (page < pages) {
-            result = result.append(Component.text(" ")).append(helpPageButton("help-next", page + 1));
+            result = result.append(Component.text(" ")).append(helpPageButton(sender, "help-next", page + 1));
         }
         return result;
     }
 
-    private Component helpPageButton(String key, int page) {
-        return messages.component(key)
+    private Component helpPageButton(CommandSender sender, String key, int page) {
+        return messages.component(sender, key)
                 .clickEvent(ClickEvent.runCommand("/vp help " + page))
-                .hoverEvent(HoverEvent.showText(messages.component("help-page-hover", Map.of("page", String.valueOf(page)))));
+                .hoverEvent(HoverEvent.showText(messages.component(sender, "help-page-hover", Map.of("page", String.valueOf(page)))));
     }
 
     private List<HelpEntry> visibleHelpEntries(CommandSender sender) {
@@ -315,7 +340,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (!handleMutationResult(player, result, null)) {
             return true;
         }
-        player.sendMessage(messages.component("spawn-set"));
+        player.sendMessage(messages.component(player, "spawn-set"));
         return true;
     }
 
@@ -340,7 +365,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (!handleMutationResult(player, result, null)) {
             return true;
         }
-        player.sendMessage(messages.component("home-set"));
+        player.sendMessage(messages.component(player, "home-set"));
         playFeedback(player, "home-set");
         return true;
     }
@@ -352,7 +377,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         Optional<StoredPoint> home = storage.home(player.getUniqueId());
         if (home.isEmpty()) {
-            player.sendMessage(messages.component("home-not-set"));
+            player.sendMessage(messages.component(player, "home-not-set"));
             return true;
         }
 
@@ -366,11 +391,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         if (args.length < 1) {
-            player.sendMessage(messages.component("setwarp-usage"));
+            player.sendMessage(messages.component(player, "setwarp-usage"));
             return true;
         }
         if (!isValidWarpName(args[0])) {
-            player.sendMessage(messages.component("invalid-warp-name"));
+            player.sendMessage(messages.component(player, "invalid-warp-name"));
             return true;
         }
 
@@ -392,7 +417,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (!handleMutationResult(player, result, warpName)) {
             return true;
         }
-        player.sendMessage(messages.component("warp-set", Map.of("warp", warpName)));
+        player.sendMessage(messages.component(player, "warp-set", Map.of("warp", warpName)));
         playFeedback(player, "warp-set");
         return true;
     }
@@ -404,14 +429,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             String argument = args[index];
             if (argument.equalsIgnoreCase("--icon")) {
                 if (index + 1 >= args.length) {
-                    player.sendMessage(messages.component("setwarp-usage"));
+                    player.sendMessage(messages.component(player, "setwarp-usage"));
                     return null;
                 }
 
                 String rawIcon = args[++index];
                 Optional<String> validatedIcon = validateWarpIcon(rawIcon);
                 if (validatedIcon.isEmpty()) {
-                    player.sendMessage(messages.component("invalid-warp-icon", Map.of("icon", rawIcon)));
+                    player.sendMessage(messages.component(player, "invalid-warp-icon", Map.of("icon", rawIcon)));
                     return null;
                 }
                 icon = validatedIcon.get();
@@ -440,11 +465,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         if (args.length != 1) {
-            player.sendMessage(messages.component("warp-usage"));
+            player.sendMessage(messages.component(player, "warp-usage"));
             return true;
         }
         if (!isValidWarpName(args[0])) {
-            player.sendMessage(messages.component("invalid-warp-name"));
+            player.sendMessage(messages.component(player, "invalid-warp-name"));
             return true;
         }
         if (!checkCommandLimits(player, "warp")) {
@@ -454,14 +479,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         String warpName = PointStorage.normalizeWarpName(args[0]);
         Optional<StoredPoint> warp = storage.warp(warpName);
         if (warp.isEmpty()) {
-            player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            player.sendMessage(messages.component(player, "warp-not-set", Map.of("warp", warpName)));
             return true;
         }
 
         StoredPoint point = warp.get();
         sendPointMessage(player, "warp-location", point, Map.of("warp", warpName));
         if (!point.description().isBlank()) {
-            player.sendMessage(messages.component("warp-description", Map.of("description", point.description())));
+            player.sendMessage(messages.component(player, "warp-description", Map.of("description", point.description())));
         }
         return true;
     }
@@ -473,11 +498,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         removeExpiredPendingDeletions();
         if (args.length != 1 && args.length != 2) {
-            player.sendMessage(messages.component("delwarp-usage"));
+            player.sendMessage(messages.component(player, "delwarp-usage"));
             return true;
         }
         if (!isValidWarpName(args[0])) {
-            player.sendMessage(messages.component("invalid-warp-name"));
+            player.sendMessage(messages.component(player, "invalid-warp-name"));
             return true;
         }
 
@@ -490,7 +515,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 return cancelWarpDeletion(player, warpName);
             }
 
-            player.sendMessage(messages.component("delwarp-usage"));
+            player.sendMessage(messages.component(player, "delwarp-usage"));
             return true;
         }
 
@@ -502,7 +527,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return deleteWarpNow(player, warpName);
         }
         if (storage.warp(warpName).isEmpty()) {
-            player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            player.sendMessage(messages.component(player, "warp-not-set", Map.of("warp", warpName)));
             return true;
         }
 
@@ -515,12 +540,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private boolean confirmWarpDeletion(Player player, String warpName) {
         PendingWarpDeletion pendingDeletion = pendingWarpDeletions.get(player.getUniqueId());
         if (pendingDeletion == null || !pendingDeletion.warpName().equals(warpName)) {
-            player.sendMessage(messages.component("warp-delete-confirm-missing", Map.of("warp", warpName)));
+            player.sendMessage(messages.component(player, "warp-delete-confirm-missing", Map.of("warp", warpName)));
             return true;
         }
         if (pendingDeletion.expiresAtMillis() <= System.currentTimeMillis()) {
             pendingWarpDeletions.remove(player.getUniqueId());
-            player.sendMessage(messages.component("warp-delete-confirm-expired", Map.of("warp", warpName)));
+            player.sendMessage(messages.component(player, "warp-delete-confirm-expired", Map.of("warp", warpName)));
             return true;
         }
 
@@ -531,40 +556,40 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private boolean cancelWarpDeletion(Player player, String warpName) {
         PendingWarpDeletion pendingDeletion = pendingWarpDeletions.get(player.getUniqueId());
         if (pendingDeletion == null || !pendingDeletion.warpName().equals(warpName)) {
-            player.sendMessage(messages.component("warp-delete-confirm-missing", Map.of("warp", warpName)));
+            player.sendMessage(messages.component(player, "warp-delete-confirm-missing", Map.of("warp", warpName)));
             return true;
         }
 
         pendingWarpDeletions.remove(player.getUniqueId());
-        player.sendMessage(messages.component("warp-delete-cancelled", Map.of("warp", warpName)));
+        player.sendMessage(messages.component(player, "warp-delete-cancelled", Map.of("warp", warpName)));
         return true;
     }
 
     private boolean deleteWarpNow(Player player, String warpName) {
         PointMutationResult result = points.deleteWarp(player, warpName);
         if (result == PointMutationResult.NOT_FOUND) {
-            player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            player.sendMessage(messages.component(player, "warp-not-set", Map.of("warp", warpName)));
             return true;
         }
         if (!handleMutationResult(player, result, warpName)) {
             return true;
         }
 
-        player.sendMessage(messages.component("warp-deleted", Map.of("warp", warpName)));
+        player.sendMessage(messages.component(player, "warp-deleted", Map.of("warp", warpName)));
         return true;
     }
 
     private void sendWarpDeletionPrompt(Player player, String warpName, long ttlMillis) {
-        Component prompt = messages.component("warp-delete-confirm-prompt", Map.of(
+        Component prompt = messages.component(player, "warp-delete-confirm-prompt", Map.of(
                 "warp", warpName,
                 "time", formatDuration(ttlMillis)
         ));
-        Component confirm = messages.component("warp-delete-confirm-button")
+        Component confirm = messages.component(player, "warp-delete-confirm-button")
                 .clickEvent(ClickEvent.runCommand("/delwarp " + warpName + " confirm"))
-                .hoverEvent(HoverEvent.showText(messages.component("warp-delete-confirm-hover")));
-        Component cancel = messages.component("warp-delete-cancel-button")
+                .hoverEvent(HoverEvent.showText(messages.component(player, "warp-delete-confirm-hover")));
+        Component cancel = messages.component(player, "warp-delete-cancel-button")
                 .clickEvent(ClickEvent.runCommand("/delwarp " + warpName + " cancel"))
-                .hoverEvent(HoverEvent.showText(messages.component("warp-delete-cancel-hover")));
+                .hoverEvent(HoverEvent.showText(messages.component(player, "warp-delete-cancel-hover")));
 
         player.sendMessage(prompt.append(Component.text(" ")).append(confirm).append(Component.text(" ")).append(cancel));
     }
@@ -579,11 +604,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private boolean sendWarpsList(CommandSender sender) {
         Set<String> warpNames = storage.warpNames();
         if (warpNames.isEmpty()) {
-            sender.sendMessage(messages.component("no-warps"));
+            sender.sendMessage(messages.component(sender, "no-warps"));
             return true;
         }
 
-        sender.sendMessage(messages.component("available-warps", Map.of("warps", String.join(", ", warpNames))));
+        sender.sendMessage(messages.component(sender, "available-warps", Map.of("warps", String.join(", ", warpNames))));
         return true;
     }
 
@@ -595,9 +620,9 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         placeholders.put("world", point.worldName());
 
         Component message = LegacyComponentSerializer.legacyAmpersand()
-                .deserialize(messages.text(messageKey, placeholders))
+                .deserialize(messages.text(player, messageKey, placeholders))
                 .clickEvent(ClickEvent.copyToClipboard(applyPlaceholders(copyFormat, placeholders)))
-                .hoverEvent(HoverEvent.showText(messages.component("coordinates-hover-text")));
+                .hoverEvent(HoverEvent.showText(messages.component(player, "coordinates-hover-text")));
 
         player.sendMessage(message);
     }
@@ -686,7 +711,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             if (lastUsedAt != null) {
                 long remainingMillis = cooldownMillis - (now - lastUsedAt);
                 if (remainingMillis > 0L) {
-                    player.sendMessage(messages.component("cooldown-active", Map.of("time", formatDuration(remainingMillis))));
+                    player.sendMessage(messages.component(player, "cooldown-active", Map.of("time", formatDuration(remainingMillis))));
                     return false;
                 }
             }
@@ -708,7 +733,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (window.size() >= maxCommands) {
             Long oldestCommandAt = window.peekFirst();
             long remainingMillis = oldestCommandAt == null ? windowMillis : oldestCommandAt + windowMillis - now;
-            player.sendMessage(messages.component("rate-limit-active", Map.of("time", formatDuration(Math.max(1L, remainingMillis)))));
+            player.sendMessage(messages.component(player, "rate-limit-active", Map.of("time", formatDuration(Math.max(1L, remainingMillis)))));
             return false;
         }
         return true;
@@ -835,7 +860,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        sender.sendMessage(messages.component("no-permission"));
+        sender.sendMessage(messages.component(sender, "no-permission"));
         return false;
     }
 
@@ -858,11 +883,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
         if (result == PointMutationResult.CANCELLED) {
             Map<String, String> placeholders = pointName == null ? Map.of() : Map.of("point", pointName);
-            player.sendMessage(messages.component("point-change-cancelled", placeholders));
+            player.sendMessage(messages.component(player, "point-change-cancelled", placeholders));
             return false;
         }
         if (result == PointMutationResult.INVALID) {
-            player.sendMessage(messages.component("data-save-error"));
+            player.sendMessage(messages.component(player, "data-save-error"));
             return false;
         }
         return false;
