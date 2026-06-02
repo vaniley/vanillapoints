@@ -423,9 +423,6 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (!point.description().isBlank()) {
             player.sendMessage(messages.component("warp-description", Map.of("description", point.description())));
         }
-        if (!point.icon().isBlank()) {
-            player.sendMessage(messages.component("warp-icon", Map.of("icon", point.icon())));
-        }
         return true;
     }
 
@@ -765,7 +762,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private String formatDuration(long millis) {
         if (millis < 1000L) {
-            return millis + "ms";
+            return "1s";
         }
 
         long seconds = (millis + 999L) / 1000L;
