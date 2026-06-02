@@ -1,5 +1,7 @@
 package dev.vaniley.vanillapoints;
 
+import dev.vaniley.vanillapoints.api.PointMetadata;
+import dev.vaniley.vanillapoints.api.VanillaPointsAPI;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -16,9 +18,9 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -30,6 +32,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public final class VanillaPoints extends JavaPlugin implements CommandExecutor, TabCompleter {
@@ -47,7 +50,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private MessageService messages;
     private PointStorage storage;
+    private AsyncSaveService saveService;
+    private PointService points;
+    private VanillaPointsApiProvider apiProvider;
     private boolean saveImmediately;
+    private boolean normalizeToBlock;
     private String copyFormat;
 
     @Override
@@ -68,7 +75,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public void onDisable() {
-        saveData();
+        unregisterApi();
+        flushAndCloseStorage();
     }
 
     private void registerCommand(String name) {
@@ -86,7 +94,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         reloadConfig();
 
         saveImmediately = getConfig().getBoolean("settings.save-immediately", true);
-        boolean normalizeToBlock = getConfig().getBoolean("settings.normalize-to-block", true);
+        normalizeToBlock = getConfig().getBoolean("settings.normalize-to-block", true);
         copyFormat = getConfig().getString("settings.copy-format", DEFAULT_COPY_FORMAT);
         if (copyFormat == null || copyFormat.isBlank()) {
             copyFormat = DEFAULT_COPY_FORMAT;
@@ -95,9 +103,37 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         messages = new MessageService(this);
         messages.load();
 
-        storage = new PointStorage(this, normalizeToBlock);
-        storage.load();
+        closeStorageOnly();
+        storage = PointStorageFactory.create(this);
+        saveService = new AsyncSaveService(this, storage, messages);
+        points = new PointService(this, storage, saveService, normalizeToBlock, saveImmediately);
+        registerApi();
         pendingWarpDeletions.clear();
+    }
+
+    private void registerApi() {
+        unregisterApi();
+        apiProvider = new VanillaPointsApiProvider(this, points);
+        getServer().getServicesManager().register(VanillaPointsAPI.class, apiProvider, this, ServicePriority.Normal);
+    }
+
+    private void unregisterApi() {
+        if (apiProvider != null) {
+            getServer().getServicesManager().unregister(VanillaPointsAPI.class, apiProvider);
+            apiProvider = null;
+        }
+    }
+
+    void reloadFromApi() {
+        if (!getServer().isPrimaryThread()) {
+            getServer().getScheduler().runTask(this, this::reloadFromApi);
+            return;
+        }
+
+        if (!flushBeforeReload()) {
+            return;
+        }
+        loadPluginState();
     }
 
     @Override
@@ -160,7 +196,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        if (!saveData()) {
+        if (!flushBeforeReload()) {
             sender.sendMessage(messages.component("data-save-error"));
             return true;
         }
@@ -275,9 +311,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        storage.setSpawn(player.getLocation());
+        PointMutationResult result = points.setSpawn(player, player.getLocation());
+        if (!handleMutationResult(player, result, null)) {
+            return true;
+        }
         player.sendMessage(messages.component("spawn-set"));
-        saveDataIfNeeded(player);
         return true;
     }
 
@@ -298,10 +336,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        storage.setHome(player.getUniqueId(), player.getLocation());
+        PointMutationResult result = points.setHome(player, player.getUniqueId(), player.getLocation());
+        if (!handleMutationResult(player, result, null)) {
+            return true;
+        }
         player.sendMessage(messages.component("home-set"));
         playFeedback(player, "home-set");
-        saveDataIfNeeded(player);
         return true;
     }
 
@@ -343,17 +383,17 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         String warpName = PointStorage.normalizeWarpName(args[0]);
-        storage.setWarp(
+        PointMutationResult result = points.setWarp(
+                player,
                 warpName,
                 player.getLocation(),
-                input.description(),
-                input.icon(),
-                player.getName(),
-                Instant.now().getEpochSecond()
+                new PointMetadata(input.description(), input.icon(), player.getName(), Instant.now().getEpochSecond())
         );
+        if (!handleMutationResult(player, result, warpName)) {
+            return true;
+        }
         player.sendMessage(messages.component("warp-set", Map.of("warp", warpName)));
         playFeedback(player, "warp-set");
-        saveDataIfNeeded(player);
         return true;
     }
 
@@ -501,13 +541,16 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private boolean deleteWarpNow(Player player, String warpName) {
-        if (!storage.deleteWarp(warpName)) {
+        PointMutationResult result = points.deleteWarp(player, warpName);
+        if (result == PointMutationResult.NOT_FOUND) {
             player.sendMessage(messages.component("warp-not-set", Map.of("warp", warpName)));
+            return true;
+        }
+        if (!handleMutationResult(player, result, warpName)) {
             return true;
         }
 
         player.sendMessage(messages.component("warp-deleted", Map.of("warp", warpName)));
-        saveDataIfNeeded(player);
         return true;
     }
 
@@ -809,27 +852,54 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         return result;
     }
 
-    private void saveDataIfNeeded(Player player) {
-        if (!saveImmediately) {
-            return;
+    private boolean handleMutationResult(Player player, PointMutationResult result, String pointName) {
+        if (result == PointMutationResult.SUCCESS) {
+            return true;
         }
-
-        if (!saveData()) {
+        if (result == PointMutationResult.CANCELLED) {
+            Map<String, String> placeholders = pointName == null ? Map.of() : Map.of("point", pointName);
+            player.sendMessage(messages.component("point-change-cancelled", placeholders));
+            return false;
+        }
+        if (result == PointMutationResult.INVALID) {
             player.sendMessage(messages.component("data-save-error"));
+            return false;
         }
+        return false;
     }
 
-    private boolean saveData() {
-        if (storage == null) {
-            return true;
-        }
+    private boolean flushBeforeReload() {
+        return saveService == null || (saveService.flush(10_000L) && saveService.saveNow());
+    }
 
+    private void flushAndCloseStorage() {
+        if (saveService != null) {
+            if (saveService.flush(10_000L)) {
+                saveService.saveNow();
+            }
+            saveService = null;
+        } else if (storage != null) {
+            try {
+                storage.save(storage.snapshot());
+            } catch (StorageException exception) {
+                getLogger().log(Level.SEVERE, "Could not save VanillaPoints data on shutdown.", exception);
+            }
+        }
+        closeStorageOnly();
+    }
+
+    private void closeStorageOnly() {
+        if (storage == null) {
+            return;
+        }
         try {
-            storage.save();
-            return true;
-        } catch (IOException exception) {
-            getLogger().severe("Could not save data.yml: " + exception.getMessage());
-            return false;
+            storage.close();
+        } catch (StorageException exception) {
+            getLogger().log(Level.SEVERE, "Could not close VanillaPoints storage.", exception);
+        } finally {
+            storage = null;
+            points = null;
+            saveService = null;
         }
     }
 

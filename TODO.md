@@ -21,9 +21,9 @@
 
 ### Phase 3: инфраструктура и API
 
-- [ ] `4.2` Асинхронная запись данных
-- [ ] `4.3` Публичный API для других плагинов
-- [ ] `4.1` SQLite / MySQL backend
+- [x] `4.2` Асинхронная запись данных
+- [x] `4.3` Публичный API для других плагинов
+- [x] `4.1` SQLite / MySQL backend
 
 ### Phase 4: локализация и интеграции
 
@@ -348,21 +348,21 @@ storage:
 
 ### TODO
 
-- [ ] Выделить `PointStorage` interface.
-- [ ] Перенести текущую YAML-логику в `YamlPointStorage`.
-- [ ] Реализовать `SqlitePointStorage`.
-- [ ] Реализовать `MysqlPointStorage` с connection pool.
-- [ ] Добавить schema migrations.
-- [ ] Добавить выбор backend через config.
-- [ ] Добавить безопасную миграцию YAML -> SQLite/MySQL.
-- [ ] Обеспечить async I/O и thread-safety.
+- [x] Выделить `PointStorage` interface.
+- [x] Перенести текущую YAML-логику в `YamlPointStorage`.
+- [x] Реализовать `SqlitePointStorage`.
+- [x] Реализовать `MysqlPointStorage` с connection pool.
+- [x] Добавить schema migrations.
+- [x] Добавить выбор backend через config.
+- [x] Добавить безопасную миграцию YAML -> SQLite/MySQL.
+- [x] Обеспечить async I/O и thread-safety.
 
 ### Acceptance Criteria
 
-- [ ] Backend `yaml` работает как раньше.
-- [ ] Backend `sqlite` сохраняет homes/warps/spawn между рестартами.
-- [ ] Backend `mysql` работает с несколькими подключениями через pool.
-- [ ] Ошибка подключения к SQL не приводит к тихой потере данных.
+- [x] Backend `yaml` работает как раньше.
+- [x] Backend `sqlite` сохраняет homes/warps/spawn между рестартами.
+- [x] Backend `mysql` работает с несколькими подключениями через pool.
+- [x] Ошибка подключения к SQL не приводит к тихой потере данных.
 
 ---
 
@@ -377,19 +377,19 @@ storage:
 
 ### TODO
 
-- [ ] Найти все синхронные вызовы сохранения данных.
-- [ ] Добавить async save через `BukkitScheduler.runTaskAsynchronously`.
-- [ ] Сделать snapshot данных перед записью, чтобы не читать Bukkit API off-thread.
-- [ ] Синхронизировать доступ к storage или использовать immutable DTO.
-- [ ] Вернуть сообщение об ошибке игроку через main thread.
-- [ ] Добавить shutdown flush при отключении плагина.
+- [x] Найти все синхронные вызовы сохранения данных.
+- [x] Добавить async save через `BukkitScheduler.runTaskAsynchronously`.
+- [x] Сделать snapshot данных перед записью, чтобы не читать Bukkit API off-thread.
+- [x] Синхронизировать доступ к storage или использовать immutable DTO.
+- [x] Вернуть сообщение об ошибке игроку через main thread.
+- [x] Добавить shutdown flush при отключении плагина.
 
 ### Acceptance Criteria
 
-- [ ] Команды не блокируют main thread при записи.
-- [ ] Ошибки записи логируются и не теряются.
-- [ ] При выключении сервера pending writes сохраняются.
-- [ ] Bukkit API не вызывается из async thread.
+- [x] Команды не блокируют main thread при записи.
+- [x] Ошибки записи логируются и не теряются.
+- [x] При выключении сервера pending writes сохраняются.
+- [x] Bukkit API не вызывается из async thread.
 
 ---
 
@@ -426,18 +426,18 @@ class HomeDeletedEvent extends Event {}
 
 ### TODO
 
-- [ ] Создать public API package.
-- [ ] Определить stable interfaces и DTO.
-- [ ] Зарегистрировать API через `ServicesManager`.
-- [ ] Добавить events для set/delete операций.
-- [ ] Документировать thread-safety API.
-- [ ] Не раскрывать mutable internal storage наружу.
+- [x] Создать public API package.
+- [x] Определить stable interfaces и DTO.
+- [x] Зарегистрировать API через `ServicesManager`.
+- [x] Добавить events для set/delete операций.
+- [x] Документировать thread-safety API.
+- [x] Не раскрывать mutable internal storage наружу.
 
 ### Acceptance Criteria
 
-- [ ] Другой плагин может получить `VanillaPointsAPI` через `ServicesManager`.
-- [ ] API возвращает корректные homes/warps.
-- [ ] Events вызываются при изменениях через команды и API.
+- [x] Другой плагин может получить `VanillaPointsAPI` через `ServicesManager`.
+- [x] API возвращает корректные homes/warps.
+- [x] Events вызываются при изменениях через команды и API.
 
 ---
 

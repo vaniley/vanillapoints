@@ -1,9 +1,25 @@
 settings:
   # Available bundled languages: en, ru.
   language: en
+  # When enabled, changes are queued for async persistence immediately after commands/API mutations.
+  # When disabled, data is flushed during /vp reload and plugin shutdown.
   save-immediately: true
   normalize-to-block: true
   copy-format: '{x} {y} {z}'
+
+storage:
+  backend: yaml # yaml | sqlite | mysql
+  migrate-yaml-on-first-run: true
+  sqlite:
+    file: storage.db
+  mysql:
+    host: localhost
+    port: 3306
+    database: vanillapoints
+    username: root
+    password: ''
+    pool-size: 8
+    use-ssl: true
 
 feedback:
   sounds: true

@@ -51,6 +51,25 @@ final class StoredPoint {
         this.createdAt = Math.max(0L, createdAt);
     }
 
+    static StoredPoint of(
+            String worldName,
+            double x,
+            double y,
+            double z,
+            float yaw,
+            float pitch,
+            String description,
+            String icon,
+            String createdBy,
+            long createdAt
+    ) {
+        if (worldName == null || worldName.isBlank()) {
+            throw new IllegalArgumentException("worldName must not be blank");
+        }
+
+        return new StoredPoint(worldName, x, y, z, yaw, pitch, description, icon, createdBy, createdAt);
+    }
+
     static StoredPoint fromLocation(Location location, boolean normalizeToBlock) {
         Location point = normalizeToBlock ? location.getBlock().getLocation() : location;
         World world = point.getWorld();
@@ -130,6 +149,26 @@ final class StoredPoint {
 
     String worldName() {
         return worldName;
+    }
+
+    double x() {
+        return x;
+    }
+
+    double y() {
+        return y;
+    }
+
+    double z() {
+        return z;
+    }
+
+    float yaw() {
+        return yaw;
+    }
+
+    float pitch() {
+        return pitch;
     }
 
     int blockX() {

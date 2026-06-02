@@ -13,7 +13,10 @@ VanillaPoints is a lightweight Paper plugin for private survival servers. It let
 - No teleportation, only coordinate display.
 - Click displayed coordinates to copy them to clipboard.
 - YAML storage in `data.yml`.
+- Optional SQLite and MySQL storage backends.
+- Async persistence queue for command/API mutations.
 - Safer data saves using `data.yml.tmp` and `data.yml.bak`.
+- Public Bukkit `ServicesManager` API and cancellable point events.
 - Configurable messages with bundled English and Russian translations.
 - Configurable copy format.
 - Data validation when loading saved points.
@@ -45,6 +48,20 @@ settings:
   save-immediately: true
   normalize-to-block: true
   copy-format: '{x} {y} {z}'
+
+storage:
+  backend: yaml # yaml | sqlite | mysql
+  migrate-yaml-on-first-run: true
+  sqlite:
+    file: storage.db
+  mysql:
+    host: localhost
+    port: 3306
+    database: vanillapoints
+    username: root
+    password: ''
+    pool-size: 8
+    use-ssl: true
 ```
 
 Available bundled languages:
@@ -53,6 +70,22 @@ Available bundled languages:
 - `ru` uses `messages_ru.yml`.
 
 `copy-format` supports `{x}`, `{y}`, `{z}`, `{world}` and `{warp}` where applicable.
+
+`settings.save-immediately` queues writes asynchronously after point changes. When disabled, pending data is flushed during `/vp reload` and plugin shutdown.
+
+`storage.backend` defaults to `yaml` for compatibility. Switching to `sqlite` or `mysql` keeps point data cached in memory for fast commands and persists snapshots asynchronously. If `storage.migrate-yaml-on-first-run` is enabled and the selected SQL backend is empty, existing `data.yml` points are imported once and the YAML file is left in place as a backup.
+
+## Public API
+
+Other plugins can access VanillaPoints through Bukkit services:
+
+```java
+RegisteredServiceProvider<VanillaPointsAPI> provider = Bukkit.getServicesManager()
+        .getRegistration(VanillaPointsAPI.class);
+VanillaPointsAPI api = provider == null ? null : provider.getProvider();
+```
+
+The public API package is `dev.vaniley.vanillapoints.api`. Mutation methods and `Location`-returning methods must be called on the server main thread. Mutation methods fire cancellable Bukkit events from `dev.vaniley.vanillapoints.api.event`; `PointInfo` methods return immutable DTOs for safer reads.
 
 ## Installation
 
