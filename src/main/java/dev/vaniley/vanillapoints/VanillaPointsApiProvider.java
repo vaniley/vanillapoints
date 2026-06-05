@@ -29,6 +29,11 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
     }
 
     @Override
+    public Optional<Location> getHome(UUID playerId, String name) {
+        return getHomeInfo(playerId, name).flatMap(PointInfo::toLocation);
+    }
+
+    @Override
     public Optional<Location> getWarp(String name) {
         return getWarpInfo(name).flatMap(PointInfo::toLocation);
     }
@@ -41,6 +46,14 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
     @Override
     public Optional<PointInfo> getHomeInfo(UUID playerId) {
         return playerId == null ? Optional.empty() : points.home(playerId).map(PointInfoMapper::toInfo);
+    }
+
+    @Override
+    public Optional<PointInfo> getHomeInfo(UUID playerId, String name) {
+        if (playerId == null || !PointStorage.isValidHomeName(name)) {
+            return Optional.empty();
+        }
+        return points.home(playerId, name).map(PointInfoMapper::toInfo);
     }
 
     @Override
@@ -59,6 +72,24 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
     @Override
     public boolean setHome(UUID playerId, Location location) {
         return playerId != null && location != null && points.setHome(null, playerId, location) == PointMutationResult.SUCCESS;
+    }
+
+    @Override
+    public boolean setHome(UUID playerId, String name, Location location) {
+        return playerId != null
+                && PointStorage.isValidHomeName(name)
+                && location != null
+                && points.setHome(null, playerId, name, location, PointMetadata.empty()) == PointMutationResult.SUCCESS;
+    }
+
+    @Override
+    public boolean deleteHome(UUID playerId, String name) {
+        return playerId != null && PointStorage.isValidHomeName(name) && points.deleteHome(null, playerId, name) == PointMutationResult.SUCCESS;
+    }
+
+    @Override
+    public Collection<String> listHomes(UUID playerId) {
+        return playerId == null ? java.util.List.of() : points.homes(playerId).keySet();
     }
 
     @Override
@@ -86,6 +117,11 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
     @Override
     public boolean isValidWarpName(String name) {
         return PointStorage.isValidWarpName(name);
+    }
+
+    @Override
+    public boolean isValidHomeName(String name) {
+        return PointStorage.isValidHomeName(name);
     }
 
     @Override

@@ -13,6 +13,20 @@ placeholders:
   empty-value: ''
   warp-list-separator: ', '
 
+homes:
+  default-limit: 3
+  limits-by-permission:
+    vanillapoints.homes.vip: 5
+    vanillapoints.homes.premium: 10
+
+info-card:
+  enabled: true
+  show-biome: true
+  show-time: true
+  show-weather: true
+  show-creator: true
+  show-age: true
+
 storage:
   backend: yaml # yaml | sqlite | mysql
   migrate-yaml-on-first-run: true

@@ -11,7 +11,7 @@ import java.util.UUID;
 abstract class AbstractPointStorage implements PointStorage {
     private final Object lock = new Object();
     private StoredPoint spawn;
-    private Map<UUID, StoredPoint> homes = new HashMap<>();
+    private Map<UUID, Map<String, StoredPoint>> homes = new HashMap<>();
     private Map<String, StoredPoint> warps = new HashMap<>();
 
     @Override
@@ -30,15 +30,53 @@ abstract class AbstractPointStorage implements PointStorage {
 
     @Override
     public Optional<StoredPoint> home(UUID playerId) {
+        return home(playerId, PointStorage.DEFAULT_HOME_NAME);
+    }
+
+    @Override
+    public Optional<StoredPoint> home(UUID playerId, String name) {
         synchronized (lock) {
-            return Optional.ofNullable(homes.get(playerId));
+            return Optional.ofNullable(homes.getOrDefault(playerId, Map.of()).get(PointStorage.normalizeHomeName(name)));
+        }
+    }
+
+    @Override
+    public Map<String, StoredPoint> homes(UUID playerId) {
+        synchronized (lock) {
+            return Map.copyOf(homes.getOrDefault(playerId, Map.of()));
         }
     }
 
     @Override
     public void setHome(UUID playerId, StoredPoint point) {
+        setHome(playerId, PointStorage.DEFAULT_HOME_NAME, point);
+    }
+
+    @Override
+    public void setHome(UUID playerId, String name, StoredPoint point) {
         synchronized (lock) {
-            homes.put(playerId, point);
+            homes.computeIfAbsent(playerId, ignored -> new HashMap<>()).put(PointStorage.normalizeHomeName(name), point);
+        }
+    }
+
+    @Override
+    public boolean deleteHome(UUID playerId, String name) {
+        synchronized (lock) {
+            Map<String, StoredPoint> playerHomes = homes.get(playerId);
+            if (playerHomes == null || playerHomes.remove(PointStorage.normalizeHomeName(name)) == null) {
+                return false;
+            }
+            if (playerHomes.isEmpty()) {
+                homes.remove(playerId);
+            }
+            return true;
+        }
+    }
+
+    @Override
+    public Set<String> homeNames(UUID playerId) {
+        synchronized (lock) {
+            return Collections.unmodifiableSet(new TreeSet<>(homes.getOrDefault(playerId, Map.of()).keySet()));
         }
     }
 
@@ -73,7 +111,9 @@ abstract class AbstractPointStorage implements PointStorage {
     @Override
     public PointStorageSnapshot snapshot() {
         synchronized (lock) {
-            return new PointStorageSnapshot(spawn, new HashMap<>(homes), new HashMap<>(warps));
+            Map<UUID, Map<String, StoredPoint>> homesCopy = new HashMap<>();
+            homes.forEach((playerId, playerHomes) -> homesCopy.put(playerId, new HashMap<>(playerHomes)));
+            return new PointStorageSnapshot(spawn, homesCopy, new HashMap<>(warps));
         }
     }
 
@@ -81,7 +121,8 @@ abstract class AbstractPointStorage implements PointStorage {
     public void replace(PointStorageSnapshot snapshot) {
         synchronized (lock) {
             spawn = snapshot.spawn();
-            homes = new HashMap<>(snapshot.homes());
+            homes = new HashMap<>();
+            snapshot.homes().forEach((playerId, playerHomes) -> homes.put(playerId, new HashMap<>(playerHomes)));
             warps = new HashMap<>(snapshot.warps());
         }
     }

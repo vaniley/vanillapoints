@@ -18,8 +18,14 @@ commands:
     aliases: [sh, setmyhome]
   home:
     description: Get your home coordinates
-    usage: /home
+    usage: /home [name]
     aliases: [h, myhome]
+  homes:
+    description: List your homes
+    usage: /homes
+  delhome:
+    description: Delete one of your homes
+    usage: /delhome <name>
   setwarp:
     description: Set a warp point
     usage: /setwarp <name> [--icon <material>] [description...]
@@ -57,6 +63,12 @@ permissions:
   vanillapoints.bypass.confirm:
     description: Bypasses VanillaPoints deletion confirmations
     default: op
+  vanillapoints.homes.vip:
+    description: Example permission for 5 homes; configure homes.limits-by-permission to change it
+    default: false
+  vanillapoints.homes.premium:
+    description: Example permission for 10 homes; configure homes.limits-by-permission to change it
+    default: false
   vanillapoints.lang.en:
     description: Uses English messages when per-player language permissions are enabled
     default: false

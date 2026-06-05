@@ -1,22 +1,20 @@
 # VanillaPoints
 
-VanillaPoints is a Paper plugin for survival servers that want useful coordinates without teleportation. Players can save spawn, home and warp points, click chat output to copy coordinates, and keep the game focused on walking, boats, rails, maps and Nether travel.
+VanillaPoints is a Paper plugin for survival servers that want useful saved coordinates without teleportation. Players can save spawn, multiple homes and public warps, click coordinates to copy them, and still travel through the world normally.
 
-Version `1.2.5` is a release build with async persistence, SQL storage options, public API/events, bundled localization, PlaceholderAPI support, command safety, and polished chat UX.
+Version `1.2.5` includes the full selected improvement set: named homes, point info cards, warp metadata, async YAML/SQLite/MySQL storage, PlaceholderAPI support, public Bukkit API/events, localization, cooldowns and safer command UX.
 
-## Highlights
+## Why VanillaPoints
 
-- Coordinate display only: no teleportation commands and no vanilla progression shortcuts.
-- Clickable coordinates: every point message copies a configurable coordinate string to clipboard.
-- Spawn, home and named warps: simple commands for the core points most survival servers need.
-- Warp metadata: `/setwarp` supports an optional Material icon and free-text description.
-- Safer deletion: `/delwarp` can require clickable confirm/cancel with a TTL.
-- Friendly command UX: aliases, smart tab completion, paginated `/vp help`, cooldowns and rate limits.
-- Player feedback: configurable sounds and particles for successful home/warp saves.
-- Durable storage: YAML by default, optional SQLite/MySQL, async saves and safe YAML backups.
-- Public integration surface: Bukkit `ServicesManager` API plus cancellable point events.
-- PlaceholderAPI: optional expansion for scoreboards, tabs, chat plugins and HUDs.
-- Bundled languages: English, Russian, Ukrainian, Spanish, German, French, Simplified Chinese, Japanese, Portuguese and Polish.
+- No teleport shortcuts: commands show coordinates only.
+- Multiple homes per player: `/sethome [name]`, `/home [name]`, `/homes`, `/delhome <name>`.
+- Permission-based home limits: default limit plus configurable VIP/premium overrides.
+- Rich point output: coordinates, world, biome, world time, weather, creator and age.
+- Warps with metadata: optional Material icon and description through `/setwarp`.
+- Click-to-copy chat: colored coordinates in chat, clean configurable clipboard text.
+- Safe server operation: async saves, YAML backups, SQL backends, cooldowns and rate limits.
+- Integrations: PlaceholderAPI expansion and Bukkit `ServicesManager` API.
+- Bundled languages: `en`, `ru`, `uk`, `es`, `de`, `fr`, `zh`, `ja`, `pt`, `pl`.
 
 ## Requirements
 
@@ -24,16 +22,16 @@ Version `1.2.5` is a release build with async persistence, SQL storage options, 
 | --- | --- |
 | Server | Paper API `1.21+` |
 | Java | `21+` |
-| Build tool | Maven wrapper or Maven |
-| Optional integration | PlaceholderAPI `2.11+` |
+| Optional | PlaceholderAPI `2.11+` |
+| Build | Maven wrapper included |
 
 ## Installation
 
-1. Download or build the VanillaPoints jar.
-2. Place the jar in the server `plugins` directory.
-3. Restart the server.
-4. Edit `plugins/VanillaPoints/config.yml` and message files if needed.
-5. Run `/vp reload` after config or message changes.
+1. Build with `./mvnw clean package` or download the release jar.
+2. Put `target/vanillapoints-1.2.5.jar` into `plugins/`.
+3. Restart the server once to generate config and message files.
+4. Edit `plugins/VanillaPoints/config.yml` if needed.
+5. Use `/vp reload` after config/message changes.
 
 ## Commands
 
@@ -41,17 +39,21 @@ Version `1.2.5` is a release build with async persistence, SQL storage options, 
 | --- | --- | --- | --- |
 | `/spawn` | `/s` | Show spawn coordinates. | none |
 | `/setspawn` | none | Save spawn at your current location. | `vanillapoints.setspawn` |
-| `/home` | `/h`, `/myhome` | Show your home coordinates. | none |
-| `/sethome` | `/sh`, `/setmyhome` | Save your home at your current location. | none |
+| `/sethome` | `/sh`, `/setmyhome` | Save the default home. | none |
+| `/sethome <name>` | `/sh <name>` | Save or update a named home. | none |
+| `/home` | `/h`, `/myhome` | Show the default home info. | none |
+| `/home <name>` | `/h <name>` | Show a named home info. | none |
+| `/homes` | none | List your homes with `used/limit`. | none |
+| `/delhome <name>` | none | Delete one of your homes. | none |
 | `/warp` | `/w` | List all warps. | none |
-| `/warp <name>` | `/w <name>` | Show one warp's coordinates and description. | none |
+| `/warp <name>` | `/w <name>` | Show warp coordinates, description and info card. | none |
 | `/warps` | none | List all warps. | none |
-| `/setwarp <name> [--icon <material>] [description...]` | none | Save a named warp with optional metadata. | `vanillapoints.setwarp` |
+| `/setwarp <name> [--icon <material>] [description...]` | none | Save a warp with optional metadata. | `vanillapoints.setwarp` |
 | `/delwarp <name>` | none | Delete a warp, optionally after confirmation. | `vanillapoints.delwarp` |
 | `/vp help [page]` | `/vanillapoints help [page]` | Show paginated command help. | none |
-| `/vp reload` | `/vanillapoints reload` | Reload config, messages and storage state. | `vanillapoints.reload` |
+| `/vp reload` | `/vanillapoints reload` | Reload config, messages and storage. | `vanillapoints.reload` |
 
-Warp names may contain Latin letters, numbers, underscores and hyphens, up to 32 characters. Names are stored case-insensitively.
+Home and warp names may contain Latin letters, numbers, underscores and hyphens, up to 32 characters. Names are stored case-insensitively. The old `/sethome` and `/home` behavior is preserved through the `default` home.
 
 ## Permissions
 
@@ -63,64 +65,39 @@ Warp names may contain Latin letters, numbers, underscores and hyphens, up to 32
 | `vanillapoints.reload` | `op` | Allows `/vp reload`. |
 | `vanillapoints.bypass.cooldown` | `op` | Bypasses cooldown and rate-limit checks. |
 | `vanillapoints.bypass.confirm` | `op` | Bypasses warp deletion confirmation. |
-| `vanillapoints.lang.<code>` | `false` | Uses a per-player language when enabled in config. |
-
-Supported language permission codes are `en`, `ru`, `uk`, `es`, `de`, `fr`, `zh`, `ja`, `pt` and `pl`.
+| `vanillapoints.homes.vip` | `false` | Example 5-home limit permission. |
+| `vanillapoints.homes.premium` | `false` | Example 10-home limit permission. |
+| `vanillapoints.lang.<code>` | `false` | Uses a per-player language when enabled. |
 
 ## Configuration
 
-Default `config.yml`:
+The generated `config.yml` contains the main controls:
 
 ```yml
 settings:
-  # Available bundled languages: en, ru, uk, es, de, fr, zh, ja, pt, pl.
   language: en
-  # When enabled, players with vanillapoints.lang.<code> receive messages in that language.
   per-player-permissions: false
-  # When enabled, changes are queued for async persistence immediately after commands/API mutations.
-  # When disabled, data is flushed during /vp reload and plugin shutdown.
   save-immediately: true
   normalize-to-block: true
   copy-format: '{x} {y} {z}'
 
-placeholders:
-  empty-value: ''
-  warp-list-separator: ', '
+homes:
+  default-limit: 3
+  limits-by-permission:
+    vanillapoints.homes.vip: 5
+    vanillapoints.homes.premium: 10
+
+info-card:
+  enabled: true
+  show-biome: true
+  show-time: true
+  show-weather: true
+  show-creator: true
+  show-age: true
 
 storage:
   backend: yaml # yaml | sqlite | mysql
   migrate-yaml-on-first-run: true
-  sqlite:
-    file: storage.db
-  mysql:
-    host: localhost
-    port: 3306
-    database: vanillapoints
-    username: root
-    password: ''
-    pool-size: 8
-    use-ssl: true
-
-feedback:
-  sounds: true
-  particles: true
-  events:
-    home-set:
-      sound: ENTITY_PLAYER_LEVELUP
-      volume: 0.6
-      pitch: 1.4
-      particle: HAPPY_VILLAGER
-      count: 12
-    warp-set:
-      sound: BLOCK_BEACON_ACTIVATE
-      volume: 0.8
-      pitch: 1.0
-      particle: END_ROD
-      count: 16
-
-help:
-  per-page: 7
-  show-hidden-commands: false
 
 cooldowns:
   default: 2s
@@ -129,84 +106,40 @@ cooldowns:
     warp: 2s
     sethome: 10s
     setwarp: 10s
-  bypass-permission: vanillapoints.bypass.cooldown
 
 rate-limit:
   window: 60s
   max-commands: 30
-
-safety:
-  confirm-deletions: true
-  confirm-ttl: 30s
-  bypass-permission: vanillapoints.bypass.confirm
 ```
 
-`settings.copy-format` supports `{x}`, `{y}`, `{z}`, `{world}` and `{warp}` where applicable. Chat messages can color coordinates independently while the clipboard output stays clean.
-
-Duration values support `ms`, `s`, `m` and `h`, for example `500ms`, `3s`, `2m` or `1h`.
-
-## Localization
-
-VanillaPoints ships these message files:
-
-| Code | File | Language |
-| --- | --- | --- |
-| `en` | `messages.yml` | English |
-| `ru` | `messages_ru.yml` | Russian |
-| `uk` | `messages_uk.yml` | Ukrainian |
-| `es` | `messages_es.yml` | Spanish |
-| `de` | `messages_de.yml` | German |
-| `fr` | `messages_fr.yml` | French |
-| `zh` | `messages_zh.yml` | Simplified Chinese |
-| `ja` | `messages_ja.yml` | Japanese |
-| `pt` | `messages_pt.yml` | Portuguese |
-| `pl` | `messages_pl.yml` | Polish |
-
-`settings.language` controls the global language. If `settings.per-player-permissions` is `true`, a player with `vanillapoints.lang.ru` or another language permission receives command messages in that language. Missing keys fall back to English.
-
-To verify translation completeness while developing, run:
-
-```bash
-scripts/check-message-keys.sh
-```
-
-## PlaceholderAPI
-
-PlaceholderAPI is optional. VanillaPoints starts normally without it and registers the `vanillapoints` expansion automatically when PlaceholderAPI is installed.
-
-| Placeholder | Description |
-| --- | --- |
-| `%vanillapoints_spawn_x%` | Spawn block X. |
-| `%vanillapoints_spawn_y%` | Spawn block Y. |
-| `%vanillapoints_spawn_z%` | Spawn block Z. |
-| `%vanillapoints_spawn_world%` | Spawn world name. |
-| `%vanillapoints_spawn_set%` | `true` if a custom spawn is saved. |
-| `%vanillapoints_home_x%` | Player home block X. |
-| `%vanillapoints_home_y%` | Player home block Y. |
-| `%vanillapoints_home_z%` | Player home block Z. |
-| `%vanillapoints_home_world%` | Player home world name. |
-| `%vanillapoints_home_set%` | `true` if the player has a home. |
-| `%vanillapoints_warp_<name>_x%` | Warp block X. |
-| `%vanillapoints_warp_<name>_y%` | Warp block Y. |
-| `%vanillapoints_warp_<name>_z%` | Warp block Z. |
-| `%vanillapoints_warp_<name>_world%` | Warp world name. |
-| `%vanillapoints_warp_<name>_set%` | `true` if the warp exists. |
-| `%vanillapoints_warp_<name>_description%` | Warp description, if set. |
-| `%vanillapoints_warp_<name>_icon%` | Warp Material icon, if set. |
-| `%vanillapoints_warp_count%` | Number of saved warps. |
-| `%vanillapoints_warp_list%` | Configurable separator-joined warp list. |
-| `%vanillapoints_distance_home%` | Player distance to home in the same world. |
-| `%vanillapoints_bearing_home%` | Compass direction from player to home. |
-
-Missing values return `placeholders.empty-value`, never an exception. Warp placeholders parse the field suffix from the right, so warp names with underscores work.
+`settings.copy-format` supports `{x}`, `{y}`, `{z}`, `{world}` and contextual placeholders such as `{warp}`. Duration values support `ms`, `s`, `m` and `h`.
 
 ## Storage
 
-The default YAML backend stores data in `plugins/VanillaPoints/data.yml`. Saves use a temporary file and `data.yml.bak` backup to reduce corruption risk.
+YAML is the default backend and stores data in `plugins/VanillaPoints/data.yml` with safe temporary writes and `data.yml.bak` backups. SQLite and MySQL use the same point model and async save queue. If `storage.migrate-yaml-on-first-run` is enabled and SQL storage is empty, existing YAML data is imported once.
 
-SQLite and MySQL use the same in-memory command cache and persist snapshots through the async save service. If `storage.migrate-yaml-on-first-run` is enabled and the selected SQL backend is empty, existing YAML data is imported once while the YAML file remains as a backup.
+Named homes are stored under each player UUID. Existing old-format single homes are loaded as the `default` home automatically.
 
-The SQL schema includes point metadata columns for descriptions, icons and creator information. Upgrades add missing metadata columns automatically.
+## PlaceholderAPI
+
+PlaceholderAPI is optional. VanillaPoints starts normally without it and registers the `vanillapoints` expansion automatically when PlaceholderAPI is present.
+
+| Placeholder | Description |
+| --- | --- |
+| `%vanillapoints_home_x%` | Default home block X. |
+| `%vanillapoints_home_y%` | Default home block Y. |
+| `%vanillapoints_home_z%` | Default home block Z. |
+| `%vanillapoints_home_world%` | Default home world. |
+| `%vanillapoints_home_set%` | `true` if default home exists. |
+| `%vanillapoints_warp_<name>_x%` | Warp block X. |
+| `%vanillapoints_warp_<name>_world%` | Warp world. |
+| `%vanillapoints_warp_<name>_description%` | Warp description. |
+| `%vanillapoints_warp_count%` | Number of saved warps. |
+| `%vanillapoints_warp_list%` | Separator-joined warp list. |
+| `%vanillapoints_distance_home%` | Distance to default home in the same world. |
+| `%vanillapoints_bearing_home%` | Compass direction to default home. |
+
+Missing values return `placeholders.empty-value`, never an exception.
 
 ## Public API
 
@@ -218,24 +151,22 @@ RegisteredServiceProvider<VanillaPointsAPI> provider = Bukkit.getServicesManager
 VanillaPointsAPI api = provider == null ? null : provider.getProvider();
 ```
 
-The public API package is `dev.vaniley.vanillapoints.api`. Mutation methods and `Location`-returning methods must be called on the server main thread because they interact with Bukkit worlds and events. Read-only `PointInfo` methods return immutable DTOs.
+The API package is `dev.vaniley.vanillapoints.api`. It includes spawn, named home and warp getters/mutators plus immutable `PointInfo` DTOs. Mutation methods fire cancellable Bukkit events and must be called on the server main thread.
 
-Mutation methods fire cancellable events from `dev.vaniley.vanillapoints.api.event` for spawn set, home set, warp set and warp delete operations.
-
-## Building
-
-Build with the Maven wrapper:
-
-```bash
-./mvnw clean package
-```
-
-The shaded plugin jar is written to `target/vanillapoints-1.2.5.jar`.
-
-Run the standard verification used for this release:
+## Build And Verify
 
 ```bash
 scripts/check-message-keys.sh
-./mvnw test
-./mvnw package
+./mvnw clean package
 ```
+
+The plugin jar is written to `target/vanillapoints-1.2.5.jar`.
+
+## Test Server Checklist
+
+- `/sethome`, `/home`, `/sethome mine`, `/home mine`, `/homes`, `/delhome mine`.
+- Home limit enforcement with no permission, `vanillapoints.homes.vip`, and `vanillapoints.homes.premium`.
+- Tab completion for `/home <tab>`, `/delhome <tab>` and `/warp <tab>`.
+- `/warp <name>` and `/home <name>` info-card fields with `info-card.*` toggles.
+- Restart persistence on YAML, and optionally SQLite/MySQL if those backends are selected.
+- PlaceholderAPI startup with and without PlaceholderAPI installed.

@@ -1,6 +1,7 @@
 package dev.vaniley.vanillapoints;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -8,6 +9,8 @@ import java.util.regex.Pattern;
 
 interface PointStorage extends AutoCloseable {
     Pattern WARP_NAME_PATTERN = Pattern.compile("[A-Za-z0-9_-]{1,32}");
+    Pattern HOME_NAME_PATTERN = Pattern.compile("[A-Za-z0-9_-]{1,32}");
+    String DEFAULT_HOME_NAME = "default";
 
     void load() throws StorageException;
 
@@ -17,7 +20,17 @@ interface PointStorage extends AutoCloseable {
 
     Optional<StoredPoint> home(UUID playerId);
 
+    Optional<StoredPoint> home(UUID playerId, String name);
+
+    Map<String, StoredPoint> homes(UUID playerId);
+
     void setHome(UUID playerId, StoredPoint point);
+
+    void setHome(UUID playerId, String name, StoredPoint point);
+
+    boolean deleteHome(UUID playerId, String name);
+
+    Set<String> homeNames(UUID playerId);
 
     Optional<StoredPoint> warp(String name);
 
@@ -38,6 +51,15 @@ interface PointStorage extends AutoCloseable {
     }
 
     static String normalizeWarpName(String name) {
+        return normalizePointName(name);
+    }
+
+    static String normalizeHomeName(String name) {
+        String normalized = normalizePointName(name);
+        return normalized.isBlank() ? DEFAULT_HOME_NAME : normalized;
+    }
+
+    static String normalizePointName(String name) {
         if (name == null) {
             return "";
         }
@@ -46,5 +68,9 @@ interface PointStorage extends AutoCloseable {
 
     static boolean isValidWarpName(String name) {
         return name != null && WARP_NAME_PATTERN.matcher(name).matches();
+    }
+
+    static boolean isValidHomeName(String name) {
+        return name != null && HOME_NAME_PATTERN.matcher(name).matches();
     }
 }

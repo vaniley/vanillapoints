@@ -12,6 +12,8 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.Registry;
 import org.bukkit.Sound;
+import org.bukkit.World;
+import org.bukkit.block.Biome;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -22,6 +24,7 @@ import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -67,6 +70,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         registerCommand("spawn");
         registerCommand("sethome");
         registerCommand("home");
+        registerCommand("homes");
+        registerCommand("delhome");
         registerCommand("setwarp");
         registerCommand("warp");
         registerCommand("warps");
@@ -180,9 +185,13 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             case "spawn":
                 return showSpawn(player);
             case "sethome":
-                return setHome(player);
+                return setHome(player, args);
             case "home":
-                return showHome(player);
+                return showHome(player, args);
+            case "homes":
+                return listHomes(player);
+            case "delhome":
+                return deleteHome(player, args);
             case "setwarp":
                 return setWarp(player, args);
             case "warp":
@@ -316,8 +325,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private List<HelpEntry> helpEntries() {
         return List.of(
                 new HelpEntry("/spawn", "help-desc-spawn", null),
-                new HelpEntry("/sethome", "help-desc-sethome", null),
-                new HelpEntry("/home", "help-desc-home", null),
+                new HelpEntry("/sethome [name]", "help-desc-sethome", null),
+                new HelpEntry("/home [name]", "help-desc-home", null),
+                new HelpEntry("/homes", "help-desc-homes", null),
+                new HelpEntry("/delhome <name>", "help-desc-delhome", null),
                 new HelpEntry("/warp [name]", "help-desc-warp", null),
                 new HelpEntry("/warps", "help-desc-warps", null),
                 new HelpEntry("/setspawn", "help-desc-setspawn", PERMISSION_SETSPAWN),
@@ -356,32 +367,116 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         return true;
     }
 
-    private boolean setHome(Player player) {
+    private boolean setHome(Player player, String[] args) {
+        if (args.length > 1) {
+            player.sendMessage(messages.component(player, "sethome-usage"));
+            return true;
+        }
+        String homeName = args.length == 0 ? PointStorage.DEFAULT_HOME_NAME : PointStorage.normalizeHomeName(args[0]);
+        if (!isValidHomeName(homeName)) {
+            player.sendMessage(messages.component(player, "invalid-home-name"));
+            return true;
+        }
         if (!checkCommandLimits(player, "sethome")) {
             return true;
         }
+        if (storage.home(player.getUniqueId(), homeName).isEmpty() && storage.homeNames(player.getUniqueId()).size() >= homeLimit(player)) {
+            player.sendMessage(messages.component(player, "home-limit-reached", Map.of("limit", String.valueOf(homeLimit(player)))));
+            return true;
+        }
 
-        PointMutationResult result = points.setHome(player, player.getUniqueId(), player.getLocation());
+        PointMutationResult result = points.setHome(
+                player,
+                player.getUniqueId(),
+                homeName,
+                player.getLocation(),
+                new PointMetadata("", "", player.getName(), Instant.now().getEpochSecond())
+        );
         if (!handleMutationResult(player, result, null)) {
             return true;
         }
-        player.sendMessage(messages.component(player, "home-set"));
+        player.sendMessage(messages.component(player, "home-set", Map.of("home", homeName)));
         playFeedback(player, "home-set");
         return true;
     }
 
-    private boolean showHome(Player player) {
+    private boolean showHome(Player player, String[] args) {
+        if (args.length > 1) {
+            player.sendMessage(messages.component(player, "home-usage"));
+            return true;
+        }
+        String homeName = args.length == 0 ? PointStorage.DEFAULT_HOME_NAME : PointStorage.normalizeHomeName(args[0]);
+        if (!isValidHomeName(homeName)) {
+            player.sendMessage(messages.component(player, "invalid-home-name"));
+            return true;
+        }
         if (!checkCommandLimits(player, "home")) {
             return true;
         }
 
-        Optional<StoredPoint> home = storage.home(player.getUniqueId());
+        Optional<StoredPoint> home = storage.home(player.getUniqueId(), homeName);
         if (home.isEmpty()) {
-            player.sendMessage(messages.component(player, "home-not-set"));
+            player.sendMessage(messages.component(player, "home-not-set", Map.of("home", homeName)));
             return true;
         }
 
-        sendPointMessage(player, "home-location", home.get(), Map.of());
+        sendPointMessage(player, "home-location", home.get(), Map.of("home", homeName));
+        sendInfoCard(player, home.get(), Map.of("point", homeName));
+        return true;
+    }
+
+    private boolean listHomes(Player player) {
+        if (!checkCommandLimits(player, "homes")) {
+            return true;
+        }
+
+        Map<String, StoredPoint> homes = storage.homes(player.getUniqueId());
+        int limit = homeLimit(player);
+        if (homes.isEmpty()) {
+            player.sendMessage(messages.component(player, "no-homes", Map.of("limit", String.valueOf(limit))));
+            return true;
+        }
+
+        player.sendMessage(messages.component(player, "homes-header", Map.of(
+                "used", String.valueOf(homes.size()),
+                "limit", String.valueOf(limit)
+        )));
+        homes.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> player.sendMessage(messages.component(player, "homes-line", Map.of(
+                        "home", entry.getKey(),
+                        "world", entry.getValue().worldName(),
+                        "x", String.valueOf(entry.getValue().blockX()),
+                        "y", String.valueOf(entry.getValue().blockY()),
+                        "z", String.valueOf(entry.getValue().blockZ())
+                ))));
+        return true;
+    }
+
+    private boolean deleteHome(Player player, String[] args) {
+        if (args.length != 1) {
+            player.sendMessage(messages.component(player, "delhome-usage"));
+            return true;
+        }
+        String homeName = PointStorage.normalizeHomeName(args[0]);
+        if (!isValidHomeName(homeName)) {
+            player.sendMessage(messages.component(player, "invalid-home-name"));
+            return true;
+        }
+        if (!checkCommandLimits(player, "delhome")) {
+            return true;
+        }
+
+        PointMutationResult result = points.deleteHome(player, player.getUniqueId(), homeName);
+        if (result == PointMutationResult.NOT_FOUND) {
+            player.sendMessage(messages.component(player, "home-not-set", Map.of("home", homeName)));
+            return true;
+        }
+        if (!handleMutationResult(player, result, homeName)) {
+            return true;
+        }
+
+        player.sendMessage(messages.component(player, "home-deleted", Map.of("home", homeName)));
         return true;
     }
 
@@ -485,6 +580,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         StoredPoint point = warp.get();
         sendPointMessage(player, "warp-location", point, Map.of("warp", warpName));
+        sendInfoCard(player, point, Map.of("point", warpName));
         if (!point.description().isBlank()) {
             player.sendMessage(messages.component(player, "warp-description", Map.of("description", point.description())));
         }
@@ -625,6 +721,83 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 .hoverEvent(HoverEvent.showText(messages.component(player, "coordinates-hover-text")));
 
         player.sendMessage(message);
+    }
+
+    private void sendInfoCard(Player player, StoredPoint point, Map<String, String> extraPlaceholders) {
+        if (!getConfig().getBoolean("info-card.enabled", true)) {
+            return;
+        }
+
+        Map<String, String> placeholders = pointPlaceholders(point, extraPlaceholders);
+        player.sendMessage(messages.component(player, "info-card-header", placeholders));
+        player.sendMessage(messages.component(player, "info-card-coordinates", placeholders));
+        if (getConfig().getBoolean("info-card.show-biome", true)) {
+            player.sendMessage(messages.component(player, "info-card-biome", placeholders));
+        }
+        if (getConfig().getBoolean("info-card.show-time", true)) {
+            player.sendMessage(messages.component(player, "info-card-time", placeholders));
+        }
+        if (getConfig().getBoolean("info-card.show-weather", true)) {
+            player.sendMessage(messages.component(player, "info-card-weather", placeholders));
+        }
+        if (getConfig().getBoolean("info-card.show-creator", true) && !point.createdBy().isBlank()) {
+            player.sendMessage(messages.component(player, "info-card-creator", placeholders));
+        }
+        if (getConfig().getBoolean("info-card.show-age", true) && point.createdAt() > 0L) {
+            player.sendMessage(messages.component(player, "info-card-age", placeholders));
+        }
+    }
+
+    private Map<String, String> pointPlaceholders(StoredPoint point, Map<String, String> extraPlaceholders) {
+        Map<String, String> placeholders = new HashMap<>(extraPlaceholders);
+        placeholders.put("x", String.valueOf(point.blockX()));
+        placeholders.put("y", String.valueOf(point.blockY()));
+        placeholders.put("z", String.valueOf(point.blockZ()));
+        placeholders.put("world", point.worldName());
+        placeholders.put("biome", pointBiome(point));
+        placeholders.put("time", pointTime(point));
+        placeholders.put("weather", pointWeather(point));
+        placeholders.put("creator", point.createdBy());
+        placeholders.put("age", pointAge(point));
+        return placeholders;
+    }
+
+    private String pointBiome(StoredPoint point) {
+        World world = getServer().getWorld(point.worldName());
+        if (world == null) {
+            return messages.text(null, "info-card-unknown");
+        }
+        Biome biome = world.getBiome(point.blockX(), point.blockY(), point.blockZ());
+        return biome.key().asString();
+    }
+
+    private String pointTime(StoredPoint point) {
+        World world = getServer().getWorld(point.worldName());
+        if (world == null) {
+            return messages.text(null, "info-card-unknown");
+        }
+        long ticks = world.getTime();
+        long hours = (ticks / 1000 + 6) % 24;
+        long minutes = (ticks % 1000) * 60 / 1000;
+        return String.format(Locale.ROOT, "%02d:%02d", hours, minutes);
+    }
+
+    private String pointWeather(StoredPoint point) {
+        World world = getServer().getWorld(point.worldName());
+        if (world == null) {
+            return messages.text(null, "info-card-unknown");
+        }
+        if (world.hasStorm()) {
+            return world.isThundering() ? messages.text(null, "info-card-weather-thunder") : messages.text(null, "info-card-weather-rain");
+        }
+        return messages.text(null, "info-card-weather-clear");
+    }
+
+    private String pointAge(StoredPoint point) {
+        if (point.createdAt() <= 0L) {
+            return messages.text(null, "info-card-unknown");
+        }
+        return formatDuration(Duration.between(Instant.ofEpochSecond(point.createdAt()), Instant.now()).toMillis());
     }
 
     private void playFeedback(Player player, String eventKey) {
@@ -855,6 +1028,22 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         return PointStorage.isValidWarpName(name);
     }
 
+    private boolean isValidHomeName(String name) {
+        return PointStorage.isValidHomeName(name);
+    }
+
+    private int homeLimit(Player player) {
+        int limit = Math.max(1, getConfig().getInt("homes.default-limit", 3));
+        if (getConfig().isConfigurationSection("homes.limits-by-permission")) {
+            for (String permission : getConfig().getConfigurationSection("homes.limits-by-permission").getKeys(false)) {
+                if (player.hasPermission(permission)) {
+                    limit = Math.max(limit, getConfig().getInt("homes.limits-by-permission." + permission, limit));
+                }
+            }
+        }
+        return limit;
+    }
+
     private boolean ensurePermission(CommandSender sender, String permission) {
         if (!(sender instanceof Player) || sender.hasPermission(permission)) {
             return true;
@@ -941,6 +1130,9 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (commandName.equals("warp")) {
             return completeWarpNames(args);
         }
+        if (commandName.equals("home") || commandName.equals("delhome")) {
+            return completeHomeNames(sender, args);
+        }
         if (commandName.equals("delwarp")) {
             return completeDeleteWarp(sender, args);
         }
@@ -972,6 +1164,13 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return List.of();
         }
         return filterByPrefix(new ArrayList<>(storage.warpNames()), args[0]);
+    }
+
+    private List<String> completeHomeNames(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player) || args.length != 1) {
+            return List.of();
+        }
+        return filterByPrefix(new ArrayList<>(storage.homeNames(player.getUniqueId())), args[0]);
     }
 
     private List<String> completeDeleteWarp(CommandSender sender, String[] args) {

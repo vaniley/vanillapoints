@@ -159,7 +159,7 @@ abstract class SqlPointStorage extends AbstractPointStorage {
 
     private PointStorageSnapshot readSnapshot(Connection connection) throws SQLException {
         StoredPoint spawn = null;
-        Map<UUID, StoredPoint> homes = new HashMap<>();
+        Map<UUID, Map<String, StoredPoint>> homes = new HashMap<>();
         Map<String, StoredPoint> warps = new HashMap<>();
 
         try (Statement statement = connection.createStatement();
@@ -171,7 +171,14 @@ abstract class SqlPointStorage extends AbstractPointStorage {
                     spawn = point;
                 } else if (POINT_TYPE_HOME.equals(type)) {
                     try {
-                        homes.put(UUID.fromString(resultSet.getString("owner_uuid")), point);
+                        String rawName = resultSet.getString("point_name");
+                        String homeName = rawName == null || rawName.isBlank() ? PointStorage.DEFAULT_HOME_NAME : rawName;
+                        if (PointStorage.isValidHomeName(homeName)) {
+                            homes.computeIfAbsent(UUID.fromString(resultSet.getString("owner_uuid")), ignored -> new HashMap<>())
+                                    .put(PointStorage.normalizeHomeName(homeName), point);
+                        } else {
+                            plugin.getLogger().warning("Skipping SQL home with invalid name: " + homeName);
+                        }
                     } catch (IllegalArgumentException exception) {
                         plugin.getLogger().warning("Skipping SQL home with invalid UUID: " + resultSet.getString("owner_uuid"));
                     }
@@ -211,8 +218,10 @@ abstract class SqlPointStorage extends AbstractPointStorage {
             if (snapshot.spawn() != null) {
                 addPoint(statement, POINT_TYPE_SPAWN, "", "", snapshot.spawn());
             }
-            for (Map.Entry<UUID, StoredPoint> entry : snapshot.homes().entrySet()) {
-                addPoint(statement, POINT_TYPE_HOME, entry.getKey().toString(), "", entry.getValue());
+            for (Map.Entry<UUID, Map<String, StoredPoint>> entry : snapshot.homes().entrySet()) {
+                for (Map.Entry<String, StoredPoint> homeEntry : entry.getValue().entrySet()) {
+                    addPoint(statement, POINT_TYPE_HOME, entry.getKey().toString(), homeEntry.getKey(), homeEntry.getValue());
+                }
             }
             for (Map.Entry<String, StoredPoint> entry : snapshot.warps().entrySet()) {
                 addPoint(statement, POINT_TYPE_WARP, "", entry.getKey(), entry.getValue());

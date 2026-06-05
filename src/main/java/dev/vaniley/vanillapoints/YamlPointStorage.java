@@ -42,7 +42,7 @@ final class YamlPointStorage extends AbstractPointStorage {
         if (snapshot.spawn() != null) {
             savePoint(data, "spawn", snapshot.spawn());
         }
-        snapshot.homes().forEach((uuid, point) -> savePoint(data, "homes." + uuid, point));
+        snapshot.homes().forEach((uuid, playerHomes) -> playerHomes.forEach((name, point) -> savePoint(data, "homes." + uuid + "." + name, point)));
         snapshot.warps().forEach((name, point) -> savePoint(data, "warps." + name, point));
 
         try {
@@ -54,13 +54,13 @@ final class YamlPointStorage extends AbstractPointStorage {
 
     private PointStorageSnapshot readSnapshot(FileConfiguration data) {
         StoredPoint spawn = readPoint(data, "spawn").orElse(null);
-        Map<UUID, StoredPoint> homes = loadHomes(data);
+        Map<UUID, Map<String, StoredPoint>> homes = loadHomes(data);
         Map<String, StoredPoint> warps = loadWarps(data);
         return new PointStorageSnapshot(spawn, homes, warps);
     }
 
-    private Map<UUID, StoredPoint> loadHomes(FileConfiguration data) {
-        Map<UUID, StoredPoint> homes = new HashMap<>();
+    private Map<UUID, Map<String, StoredPoint>> loadHomes(FileConfiguration data) {
+        Map<UUID, Map<String, StoredPoint>> homes = new HashMap<>();
         ConfigurationSection section = data.getConfigurationSection("homes");
         if (section == null) {
             return homes;
@@ -68,12 +68,33 @@ final class YamlPointStorage extends AbstractPointStorage {
 
         for (String key : section.getKeys(false)) {
             try {
-                readPoint(data, "homes." + key).ifPresent(point -> homes.put(UUID.fromString(key), point));
+                UUID playerId = UUID.fromString(key);
+                ConfigurationSection playerSection = data.getConfigurationSection("homes." + key);
+                if (playerSection == null) {
+                    continue;
+                }
+                if (playerSection.contains("world")) {
+                    readPoint(data, "homes." + key).ifPresent(point -> putHome(homes, playerId, PointStorage.DEFAULT_HOME_NAME, point));
+                    continue;
+                }
+
+                for (String homeName : playerSection.getKeys(false)) {
+                    if (!PointStorage.isValidHomeName(homeName)) {
+                        plugin.getLogger().warning("Skipping home with invalid name: " + homeName);
+                        continue;
+                    }
+                    readPoint(data, "homes." + key + "." + homeName)
+                            .ifPresent(point -> putHome(homes, playerId, PointStorage.normalizeHomeName(homeName), point));
+                }
             } catch (IllegalArgumentException exception) {
                 plugin.getLogger().warning("Skipping home with invalid UUID: " + key);
             }
         }
         return homes;
+    }
+
+    private void putHome(Map<UUID, Map<String, StoredPoint>> homes, UUID playerId, String name, StoredPoint point) {
+        homes.computeIfAbsent(playerId, ignored -> new HashMap<>()).put(name, point);
     }
 
     private Map<String, StoredPoint> loadWarps(FileConfiguration data) {
