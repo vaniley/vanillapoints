@@ -14,21 +14,30 @@ placeholders:
   warp-list-separator: ', '
 
 homes:
-  default-limit: 3
+  default-limit: 1
+  operator-unlimited: true
   limits-by-permission:
     vanillapoints.homes.vip: 5
     vanillapoints.homes.premium: 10
 
 info-card:
-  enabled: true
+  enabled: false
   show-biome: true
-  show-time: true
-  show-weather: true
+  show-time: false
+  show-weather: false
   show-creator: true
-  show-age: true
+  show-age: false
+  lines:
+    - header
+    - coordinates
+    - biome
+    - time
+    - weather
+    - creator
+    - age
 
 storage:
-  backend: yaml # yaml | sqlite | mysql
+  backend: sqlite # yaml | sqlite | mysql
   migrate-yaml-on-first-run: true
   sqlite:
     file: storage.db

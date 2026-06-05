@@ -8,7 +8,7 @@ Version `1.2.5` includes the full selected improvement set: named homes, point i
 
 - No teleport shortcuts: commands show coordinates only.
 - Multiple homes per player: `/sethome [name]`, `/home [name]`, `/homes`, `/delhome <name>`.
-- Permission-based home limits: default limit plus configurable VIP/premium overrides.
+- Permission-based home limits: one home by default, configurable VIP/premium overrides and unlimited homes for operators.
 - Rich point output: coordinates, world, biome, world time, weather, creator and age.
 - Warps with metadata: optional Material icon and description through `/setwarp`.
 - Click-to-copy chat: colored coordinates in chat, clean configurable clipboard text.
@@ -82,21 +82,30 @@ settings:
   copy-format: '{x} {y} {z}'
 
 homes:
-  default-limit: 3
+  default-limit: 1
+  operator-unlimited: true
   limits-by-permission:
     vanillapoints.homes.vip: 5
     vanillapoints.homes.premium: 10
 
 info-card:
-  enabled: true
+  enabled: false
   show-biome: true
-  show-time: true
-  show-weather: true
+  show-time: false
+  show-weather: false
   show-creator: true
-  show-age: true
+  show-age: false
+  lines:
+    - header
+    - coordinates
+    - biome
+    - time
+    - weather
+    - creator
+    - age
 
 storage:
-  backend: yaml # yaml | sqlite | mysql
+  backend: sqlite # yaml | sqlite | mysql
   migrate-yaml-on-first-run: true
 
 cooldowns:
@@ -112,11 +121,11 @@ rate-limit:
   max-commands: 30
 ```
 
-`settings.copy-format` supports `{x}`, `{y}`, `{z}`, `{world}` and contextual placeholders such as `{warp}`. Duration values support `ms`, `s`, `m` and `h`.
+`settings.copy-format` supports `{x}`, `{y}`, `{z}`, `{world}` and contextual placeholders such as `{warp}`. `info-card.lines` controls the order and presence of card rows; valid values are `header`, `coordinates`, `biome`, `time`, `weather`, `creator` and `age`. Duration values support `ms`, `s`, `m` and `h`.
 
 ## Storage
 
-YAML is the default backend and stores data in `plugins/VanillaPoints/data.yml` with safe temporary writes and `data.yml.bak` backups. SQLite and MySQL use the same point model and async save queue. If `storage.migrate-yaml-on-first-run` is enabled and SQL storage is empty, existing YAML data is imported once.
+SQLite is the default backend and stores data in `plugins/VanillaPoints/storage.db`. YAML remains supported through `storage.backend: yaml` and writes `plugins/VanillaPoints/data.yml` with safe temporary writes and `data.yml.bak` backups. MySQL uses the same point model and async save queue. If `storage.migrate-yaml-on-first-run` is enabled and SQL storage is empty, existing YAML data is imported once.
 
 Named homes are stored under each player UUID. Existing old-format single homes are loaded as the `default` home automatically.
 
@@ -165,7 +174,7 @@ The plugin jar is written to `target/vanillapoints-1.2.5.jar`.
 ## Test Server Checklist
 
 - `/sethome`, `/home`, `/sethome mine`, `/home mine`, `/homes`, `/delhome mine`.
-- Home limit enforcement with no permission, `vanillapoints.homes.vip`, and `vanillapoints.homes.premium`.
+- Home limit enforcement with no permission, operator status, `vanillapoints.homes.vip`, and `vanillapoints.homes.premium`.
 - Tab completion for `/home <tab>`, `/delhome <tab>` and `/warp <tab>`.
 - `/warp <name>` and `/home <name>` info-card fields with `info-card.*` toggles.
 - Restart persistence on YAML, and optionally SQLite/MySQL if those backends are selected.
