@@ -20,8 +20,12 @@ homes:
     vanillapoints.homes.vip: 5
     vanillapoints.homes.premium: 10
 
+spawn:
+  # When true, /setspawn and /spawn operate on the player's current world. When false a single global spawn is used.
+  per-world: false
+
 info-card:
-  enabled: false
+  enabled: true
   show-biome: true
   show-time: false
   show-weather: false
@@ -39,6 +43,9 @@ info-card:
 storage:
   backend: sqlite # yaml | sqlite | mysql
   migrate-yaml-on-first-run: true
+  # SQL pool startup/health-check timeouts. Invalid SQL configuration disables the plugin with a clear log entry.
+  connection-timeout-ms: 10000
+  validation-timeout-ms: 5000
   sqlite:
     file: storage.db
   mysql:
@@ -66,6 +73,12 @@ feedback:
       pitch: 1.0
       particle: END_ROD
       count: 16
+    spawn-set:
+      sound: BLOCK_BEACON_POWER_SELECT
+      volume: 0.7
+      pitch: 1.0
+      particle: HAPPY_VILLAGER
+      count: 12
 
 help:
   per-page: 7
@@ -88,3 +101,15 @@ safety:
   confirm-deletions: true
   confirm-ttl: 30s
   bypass-permission: vanillapoints.bypass.confirm
+
+# Anonymous usage metrics via bStats. Register the project first, then set its numeric service id.
+metrics:
+  enabled: false
+  service-id: 0
+
+update-checker:
+  enabled: true
+  # SpigotMC resource id (preferred). Leave 0 to use the custom url below instead, or disable the checker.
+  spigot-resource-id: 0
+  # Optional custom endpoint that returns the latest version as plain text. Ignored when spigot-resource-id > 0.
+  url: ''

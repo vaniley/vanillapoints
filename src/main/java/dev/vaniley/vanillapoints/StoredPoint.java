@@ -4,6 +4,8 @@ import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.configuration.ConfigurationSection;
 
+import java.util.Objects;
+
 final class StoredPoint {
     private static final String WORLD = "world";
     private static final String X = "x";
@@ -13,6 +15,8 @@ final class StoredPoint {
     private static final String PITCH = "pitch";
     private static final String DESCRIPTION = "description";
     private static final String ICON = "icon";
+    private static final String CATEGORY = "category";
+    private static final String PUBLIC = "public";
     private static final String CREATED_BY = "created-by";
     private static final String CREATED_AT = "created-at";
 
@@ -24,6 +28,8 @@ final class StoredPoint {
     private final float pitch;
     private final String description;
     private final String icon;
+    private final String category;
+    private final boolean publicVisible;
     private final String createdBy;
     private final long createdAt;
 
@@ -36,6 +42,8 @@ final class StoredPoint {
             float pitch,
             String description,
             String icon,
+            String category,
+            boolean publicVisible,
             String createdBy,
             long createdAt
     ) {
@@ -47,6 +55,8 @@ final class StoredPoint {
         this.pitch = pitch;
         this.description = normalizeOptional(description);
         this.icon = normalizeOptional(icon);
+        this.category = normalizeOptional(category);
+        this.publicVisible = publicVisible;
         this.createdBy = normalizeOptional(createdBy);
         this.createdAt = Math.max(0L, createdAt);
     }
@@ -60,6 +70,8 @@ final class StoredPoint {
             float pitch,
             String description,
             String icon,
+            String category,
+            boolean publicVisible,
             String createdBy,
             long createdAt
     ) {
@@ -67,7 +79,7 @@ final class StoredPoint {
             throw new IllegalArgumentException("worldName must not be blank");
         }
 
-        return new StoredPoint(worldName, x, y, z, yaw, pitch, description, icon, createdBy, createdAt);
+        return new StoredPoint(worldName, x, y, z, yaw, pitch, description, icon, category, publicVisible, createdBy, createdAt);
     }
 
     static StoredPoint fromLocation(Location location, boolean normalizeToBlock) {
@@ -87,12 +99,14 @@ final class StoredPoint {
                 "",
                 "",
                 "",
+                true,
+                "",
                 0L
         );
     }
 
-    StoredPoint withMetadata(String description, String icon, String createdBy, long createdAt) {
-        return new StoredPoint(worldName, x, y, z, yaw, pitch, description, icon, createdBy, createdAt);
+    StoredPoint withMetadata(String description, String icon, String category, boolean publicVisible, String createdBy, long createdAt) {
+        return new StoredPoint(worldName, x, y, z, yaw, pitch, description, icon, category, publicVisible, createdBy, createdAt);
     }
 
     static StoredPoint fromSection(ConfigurationSection section) {
@@ -113,6 +127,8 @@ final class StoredPoint {
                 hasNumber(section, PITCH) ? (float) section.getDouble(PITCH) : 0.0F,
                 section.getString(DESCRIPTION, ""),
                 section.getString(ICON, ""),
+                section.getString(CATEGORY, ""),
+                section.getBoolean(PUBLIC, true),
                 section.getString(CREATED_BY, ""),
                 hasNumber(section, CREATED_AT) ? section.getLong(CREATED_AT) : 0L
         );
@@ -131,6 +147,10 @@ final class StoredPoint {
         section.set(PITCH, pitch);
         setOptional(section, DESCRIPTION, description);
         setOptional(section, ICON, icon);
+        setOptional(section, CATEGORY, category);
+        if (!publicVisible) {
+            section.set(PUBLIC, false);
+        }
         setOptional(section, CREATED_BY, createdBy);
         if (createdAt > 0L) {
             section.set(CREATED_AT, createdAt);
@@ -191,11 +211,46 @@ final class StoredPoint {
         return icon;
     }
 
+    String category() {
+        return category;
+    }
+
+    boolean publicVisible() {
+        return publicVisible;
+    }
+
     String createdBy() {
         return createdBy;
     }
 
     long createdAt() {
         return createdAt;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof StoredPoint point)) {
+            return false;
+        }
+        return Double.compare(x, point.x) == 0
+                && Double.compare(y, point.y) == 0
+                && Double.compare(z, point.z) == 0
+                && Float.compare(yaw, point.yaw) == 0
+                && Float.compare(pitch, point.pitch) == 0
+                && publicVisible == point.publicVisible
+                && createdAt == point.createdAt
+                && worldName.equals(point.worldName)
+                && description.equals(point.description)
+                && icon.equals(point.icon)
+                && category.equals(point.category)
+                && createdBy.equals(point.createdBy);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(worldName, x, y, z, yaw, pitch, description, icon, category, publicVisible, createdBy, createdAt);
     }
 }

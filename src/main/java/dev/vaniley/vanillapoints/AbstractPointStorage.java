@@ -2,6 +2,7 @@ package dev.vaniley.vanillapoints;
 
 import java.util.HashMap;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -10,21 +11,53 @@ import java.util.UUID;
 
 abstract class AbstractPointStorage implements PointStorage {
     private final Object lock = new Object();
-    private StoredPoint spawn;
+    private Map<String, StoredPoint> spawns = new HashMap<>();
     private Map<UUID, Map<String, StoredPoint>> homes = new HashMap<>();
     private Map<String, StoredPoint> warps = new HashMap<>();
+
+    private static String spawnKey(String worldName) {
+        return worldName == null ? PointStorageSnapshot.GLOBAL_SPAWN_KEY : worldName.toLowerCase(Locale.ROOT);
+    }
 
     @Override
     public Optional<StoredPoint> spawn() {
         synchronized (lock) {
-            return Optional.ofNullable(spawn);
+            return Optional.ofNullable(spawns.get(PointStorageSnapshot.GLOBAL_SPAWN_KEY));
         }
     }
 
     @Override
     public void setSpawn(StoredPoint point) {
         synchronized (lock) {
-            spawn = point;
+            spawns.put(PointStorageSnapshot.GLOBAL_SPAWN_KEY, point);
+        }
+    }
+
+    @Override
+    public Optional<StoredPoint> spawn(String worldName) {
+        synchronized (lock) {
+            return Optional.ofNullable(spawns.get(spawnKey(worldName)));
+        }
+    }
+
+    @Override
+    public void setSpawn(String worldName, StoredPoint point) {
+        synchronized (lock) {
+            spawns.put(spawnKey(worldName), point);
+        }
+    }
+
+    @Override
+    public boolean deleteSpawn(String worldName) {
+        synchronized (lock) {
+            return spawns.remove(spawnKey(worldName)) != null;
+        }
+    }
+
+    @Override
+    public Map<String, StoredPoint> spawns() {
+        synchronized (lock) {
+            return Map.copyOf(spawns);
         }
     }
 
@@ -113,14 +146,14 @@ abstract class AbstractPointStorage implements PointStorage {
         synchronized (lock) {
             Map<UUID, Map<String, StoredPoint>> homesCopy = new HashMap<>();
             homes.forEach((playerId, playerHomes) -> homesCopy.put(playerId, new HashMap<>(playerHomes)));
-            return new PointStorageSnapshot(spawn, homesCopy, new HashMap<>(warps));
+            return new PointStorageSnapshot(new HashMap<>(spawns), homesCopy, new HashMap<>(warps));
         }
     }
 
     @Override
     public void replace(PointStorageSnapshot snapshot) {
         synchronized (lock) {
-            spawn = snapshot.spawn();
+            spawns = new HashMap<>(snapshot.spawns());
             homes = new HashMap<>();
             snapshot.homes().forEach((playerId, playerHomes) -> homes.put(playerId, new HashMap<>(playerHomes)));
             warps = new HashMap<>(snapshot.warps());

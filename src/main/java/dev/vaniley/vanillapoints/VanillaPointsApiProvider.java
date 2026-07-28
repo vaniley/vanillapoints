@@ -24,6 +24,26 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
     }
 
     @Override
+    public Optional<Location> getSpawn(String worldName) {
+        return getSpawnInfo(worldName).flatMap(PointInfo::toLocation);
+    }
+
+    @Override
+    public Optional<PointInfo> getSpawnInfo(String worldName) {
+        return points.spawn(worldName).map(PointInfoMapper::toInfo);
+    }
+
+    @Override
+    public boolean setSpawn(String worldName, Location location) {
+        return location != null && points.setSpawn(null, worldName, location) == PointMutationResult.SUCCESS;
+    }
+
+    @Override
+    public boolean deleteSpawn(String worldName) {
+        return points.deleteSpawn(null, worldName) == PointMutationResult.SUCCESS;
+    }
+
+    @Override
     public Optional<Location> getHome(UUID playerId) {
         return getHomeInfo(playerId).flatMap(PointInfo::toLocation);
     }

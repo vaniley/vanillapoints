@@ -18,6 +18,14 @@ interface PointStorage extends AutoCloseable {
 
     void setSpawn(StoredPoint point);
 
+    Optional<StoredPoint> spawn(String worldName);
+
+    void setSpawn(String worldName, StoredPoint point);
+
+    boolean deleteSpawn(String worldName);
+
+    Map<String, StoredPoint> spawns();
+
     Optional<StoredPoint> home(UUID playerId);
 
     Optional<StoredPoint> home(UUID playerId, String name);

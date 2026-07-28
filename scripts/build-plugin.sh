@@ -57,11 +57,16 @@ if ! command -v javac >/dev/null 2>&1; then
     cat >&2 <<'ERROR'
 Java is installed, but javac was not found.
 
-Install a JDK 21 package, not only a Java runtime, then run this script again.
-On Arch/Manjaro, for example:
-  sudo pacman -S jdk21-openjdk
+Install JDK 25 or newer, not only a Java runtime, then run this script again.
 ERROR
     exit 127
+fi
+
+JAVAC_MAJOR="$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)"
+if [[ ! "$JAVAC_MAJOR" =~ ^[0-9]+$ ]] || (( JAVAC_MAJOR < 25 )); then
+    printf 'VanillaPoints for Paper 26.2 requires JDK 25 or newer (found javac %s).\n' \
+        "$(javac -version 2>&1)" >&2
+    exit 1
 fi
 
 GOALS=(package)

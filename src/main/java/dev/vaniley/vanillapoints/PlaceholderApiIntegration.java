@@ -1,6 +1,7 @@
 package dev.vaniley.vanillapoints;
 
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
@@ -10,7 +11,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 final class PlaceholderApiIntegration extends PlaceholderExpansion {
-    private static final List<String> WARP_FIELDS = List.of("description", "world", "icon", "set", "x", "y", "z");
+    private static final List<String> WARP_FIELDS = List.of("description", "world", "icon", "category", "public", "set", "x", "y", "z");
 
     private final VanillaPoints plugin;
     private final PointService points;
@@ -27,13 +28,13 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
 
     @Override
     public String getAuthor() {
-        List<String> authors = plugin.getDescription().getAuthors();
+        List<String> authors = plugin.getPluginMeta().getAuthors();
         return authors.isEmpty() ? "VanillaPoints" : String.join(", ", authors);
     }
 
     @Override
     public String getVersion() {
-        return plugin.getDescription().getVersion();
+        return plugin.getPluginMeta().getVersion();
     }
 
     @Override
@@ -133,12 +134,14 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
             case "world" -> point.worldName();
             case "description" -> valueOrEmpty(point.description());
             case "icon" -> valueOrEmpty(point.icon());
+            case "category" -> valueOrEmpty(point.category());
+            case "public" -> String.valueOf(point.publicVisible());
             default -> emptyValue();
         };
     }
 
     private String distanceToHome(Player player) {
-        if (player == null) {
+        if (player == null || !Bukkit.isPrimaryThread()) {
             return emptyValue();
         }
 
@@ -156,7 +159,7 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
     }
 
     private String bearingToHome(Player player) {
-        if (player == null) {
+        if (player == null || !Bukkit.isPrimaryThread()) {
             return emptyValue();
         }
 

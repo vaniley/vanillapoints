@@ -15,6 +15,8 @@ public record PointInfo(
         float pitch,
         String description,
         String icon,
+        String category,
+        boolean publicVisible,
         String createdBy,
         long createdAt
 ) {
@@ -24,8 +26,27 @@ public record PointInfo(
         }
         description = normalize(description);
         icon = normalize(icon);
+        category = normalize(category);
         createdBy = normalize(createdBy);
         createdAt = Math.max(0L, createdAt);
+    }
+
+    /**
+     * Backwards-compatible constructor without category/visibility. Points default to public with no category.
+     */
+    public PointInfo(
+            String worldName,
+            double x,
+            double y,
+            double z,
+            float yaw,
+            float pitch,
+            String description,
+            String icon,
+            String createdBy,
+            long createdAt
+    ) {
+        this(worldName, x, y, z, yaw, pitch, description, icon, "", true, createdBy, createdAt);
     }
 
     public int blockX() {

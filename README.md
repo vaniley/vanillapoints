@@ -2,7 +2,7 @@
 
 VanillaPoints is a Paper plugin for survival servers that want useful saved coordinates without teleportation. Players can save spawn, multiple homes and public warps, click coordinates to copy them, and still travel through the world normally.
 
-Version `1.2.5` includes the full selected improvement set: named homes, point info cards, warp metadata, async YAML/SQLite/MySQL storage, PlaceholderAPI support, public Bukkit API/events, localization, cooldowns and safer command UX.
+Version `1.4.0` targets Paper 26.2 and adds incremental SQL persistence, safer database startup, complete bundled translations, smaller runtime-library-based packaging and improved internal service separation. It also includes the full selected feature set: named homes, point info cards, warp metadata, async YAML/SQLite/MySQL storage, PlaceholderAPI support, public Bukkit API/events, localization, cooldowns and safer command UX.
 
 ## Why VanillaPoints
 
@@ -20,16 +20,16 @@ Version `1.2.5` includes the full selected improvement set: named homes, point i
 
 | Requirement | Version |
 | --- | --- |
-| Server | Paper API `1.21+` |
-| Java | `21+` |
+| Server | Paper `26.2` |
+| Java | `25+` |
 | Optional | PlaceholderAPI `2.11+` |
 | Build | Maven wrapper included |
 
 ## Installation
 
-1. Build with `./mvnw clean package` or download the release jar.
-2. Put `target/vanillapoints-1.2.5.jar` into `plugins/`.
-3. Restart the server once to generate config and message files.
+1. Build with JDK 25+ using `./mvnw clean package`, or download the release jar.
+2. Put `target/vanillapoints-1.4.0.jar` into `plugins/`.
+3. Start the server once. Paper downloads the declared SQL runtime libraries and generates config/message files, so the first startup requires Maven Central access.
 4. Edit `plugins/VanillaPoints/config.yml` if needed.
 5. Use `/vp reload` after config/message changes.
 
@@ -107,6 +107,8 @@ info-card:
 storage:
   backend: sqlite # yaml | sqlite | mysql
   migrate-yaml-on-first-run: true
+  connection-timeout-ms: 10000
+  validation-timeout-ms: 5000
 
 cooldowns:
   default: 2s
@@ -169,7 +171,7 @@ scripts/check-message-keys.sh
 ./mvnw clean package
 ```
 
-The plugin jar is written to `target/vanillapoints-1.2.5.jar`.
+The plugin jar is written to `target/vanillapoints-1.4.0.jar`.
 
 ## Test Server Checklist
 

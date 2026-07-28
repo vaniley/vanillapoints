@@ -39,9 +39,13 @@ final class YamlPointStorage extends AbstractPointStorage {
         ensureDataFile();
 
         YamlConfiguration data = new YamlConfiguration();
-        if (snapshot.spawn() != null) {
-            savePoint(data, "spawn", snapshot.spawn());
-        }
+        snapshot.spawns().forEach((world, point) -> {
+            if (world == null || world.isEmpty()) {
+                savePoint(data, "spawn", point);
+            } else {
+                savePoint(data, "spawns." + world, point);
+            }
+        });
         snapshot.homes().forEach((uuid, playerHomes) -> playerHomes.forEach((name, point) -> savePoint(data, "homes." + uuid + "." + name, point)));
         snapshot.warps().forEach((name, point) -> savePoint(data, "warps." + name, point));
 
@@ -53,10 +57,23 @@ final class YamlPointStorage extends AbstractPointStorage {
     }
 
     private PointStorageSnapshot readSnapshot(FileConfiguration data) {
-        StoredPoint spawn = readPoint(data, "spawn").orElse(null);
+        Map<String, StoredPoint> spawns = loadSpawns(data);
         Map<UUID, Map<String, StoredPoint>> homes = loadHomes(data);
         Map<String, StoredPoint> warps = loadWarps(data);
-        return new PointStorageSnapshot(spawn, homes, warps);
+        return new PointStorageSnapshot(spawns, homes, warps);
+    }
+
+    private Map<String, StoredPoint> loadSpawns(FileConfiguration data) {
+        Map<String, StoredPoint> spawns = new HashMap<>();
+        readPoint(data, "spawn").ifPresent(point -> spawns.put(PointStorageSnapshot.GLOBAL_SPAWN_KEY, point));
+
+        ConfigurationSection section = data.getConfigurationSection("spawns");
+        if (section != null) {
+            for (String world : section.getKeys(false)) {
+                readPoint(data, "spawns." + world).ifPresent(point -> spawns.put(world, point));
+            }
+        }
+        return spawns;
     }
 
     private Map<UUID, Map<String, StoredPoint>> loadHomes(FileConfiguration data) {

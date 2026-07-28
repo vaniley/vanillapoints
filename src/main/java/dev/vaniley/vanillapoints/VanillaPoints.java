@@ -6,12 +6,10 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
-import org.bukkit.Particle;
-import org.bukkit.Registry;
-import org.bukkit.Sound;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.block.Biome;
 import org.bukkit.command.Command;
@@ -25,10 +23,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.time.Instant;
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -38,18 +34,18 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public final class VanillaPoints extends JavaPlugin implements CommandExecutor, TabCompleter {
     private static final String PERMISSION_SETSPAWN = "vanillapoints.setspawn";
     private static final String PERMISSION_SETWARP = "vanillapoints.setwarp";
     private static final String PERMISSION_DELWARP = "vanillapoints.delwarp";
     private static final String PERMISSION_RELOAD = "vanillapoints.reload";
-    private static final String PERMISSION_BYPASS_COOLDOWN = "vanillapoints.bypass.cooldown";
     private static final String PERMISSION_BYPASS_CONFIRM = "vanillapoints.bypass.confirm";
+    private static final String PERMISSION_ADMIN = "vanillapoints.admin";
+    private static final String PERMISSION_WARP_PRIVATE = "vanillapoints.warp.private";
     private static final String DEFAULT_COPY_FORMAT = "{x} {y} {z}";
 
-    private final Map<UUID, Map<String, Long>> cooldowns = new HashMap<>();
-    private final Map<UUID, Deque<Long>> commandWindows = new HashMap<>();
     private final Map<UUID, PendingWarpDeletion> pendingWarpDeletions = new HashMap<>();
 
     private MessageService messages;
@@ -58,14 +54,42 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private PointService points;
     private VanillaPointsApiProvider apiProvider;
     private PlaceholderApiIntegration placeholderApiIntegration;
+    private UpdateChecker updateChecker;
+    private CommandLimitService commandLimits;
+    private FeedbackService feedback;
     private boolean saveImmediately;
     private boolean normalizeToBlock;
+    private boolean spawnPerWorld;
     private String copyFormat;
+
+    MessageService messages() {
+        return messages;
+    }
+
+    void clearPlayerState(UUID playerId) {
+        if (commandLimits != null) {
+            commandLimits.clear(playerId);
+        }
+        pendingWarpDeletions.remove(playerId);
+    }
+
+    void notifyUpdate(Player player) {
+        if (updateChecker != null) {
+            updateChecker.notifyIfAdmin(player);
+        }
+    }
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        loadPluginState();
+        try {
+            loadPluginState();
+        } catch (StorageException exception) {
+            getLogger().log(Level.SEVERE, "VanillaPoints could not initialize its storage and will be disabled. "
+                    + "Check storage.* in config.yml and the database connection.", exception);
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
         registerCommand("setspawn");
         registerCommand("spawn");
@@ -78,6 +102,25 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         registerCommand("warps");
         registerCommand("delwarp");
         registerCommand("vanillapoints");
+
+        getServer().getPluginManager().registerEvents(new PlayerStateListener(this), this);
+
+        updateChecker = new UpdateChecker(this);
+        updateChecker.checkAsync();
+
+        initMetrics();
+    }
+
+    private void initMetrics() {
+        int serviceId = getConfig().getInt("metrics.service-id", 0);
+        if (!getConfig().getBoolean("metrics.enabled", false) || serviceId <= 0) {
+            return;
+        }
+        try {
+            new org.bstats.bukkit.Metrics(this, serviceId);
+        } catch (Throwable throwable) {
+            getLogger().log(Level.FINE, "Could not start bStats metrics: " + throwable.getMessage());
+        }
     }
 
     @Override
@@ -104,6 +147,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         saveImmediately = getConfig().getBoolean("settings.save-immediately", true);
         normalizeToBlock = getConfig().getBoolean("settings.normalize-to-block", true);
+        spawnPerWorld = getConfig().getBoolean("spawn.per-world", false);
         copyFormat = getConfig().getString("settings.copy-format", DEFAULT_COPY_FORMAT);
         if (copyFormat == null || copyFormat.isBlank()) {
             copyFormat = DEFAULT_COPY_FORMAT;
@@ -111,9 +155,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         messages = new MessageService(this);
         messages.load();
+        commandLimits = new CommandLimitService(this, messages);
+        feedback = new FeedbackService(this);
 
+        PointStorage replacementStorage = PointStorageFactory.create(this);
         closeStorageOnly();
-        storage = PointStorageFactory.create(this);
+        storage = replacementStorage;
         saveService = new AsyncSaveService(this, storage, messages);
         points = new PointService(this, storage, saveService, normalizeToBlock, saveImmediately);
         registerApi();
@@ -219,8 +266,143 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return reloadPlugin(sender);
         }
 
-        sender.sendMessage(messages.component(sender, "plugin-usage"));
+        switch (args[0].toLowerCase(Locale.ROOT)) {
+            case "homes":
+                return adminListHomes(sender, args);
+            case "delhome":
+                return adminDeleteHome(sender, args);
+            case "purge":
+                return adminPurge(sender, args);
+            case "import":
+                return adminImport(sender, args);
+            default:
+                sender.sendMessage(messages.component(sender, "plugin-usage"));
+                return true;
+        }
+    }
+
+    private boolean adminListHomes(CommandSender sender, String[] args) {
+        if (!ensurePermission(sender, PERMISSION_ADMIN)) {
+            return true;
+        }
+        if (args.length != 2) {
+            sender.sendMessage(messages.component(sender, "admin-homes-usage"));
+            return true;
+        }
+
+        OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        Map<String, StoredPoint> homes = storage.homes(target.getUniqueId());
+        if (homes.isEmpty()) {
+            sender.sendMessage(messages.component(sender, "admin-homes-empty", Map.of("player", args[1])));
+            return true;
+        }
+
+        sender.sendMessage(messages.component(sender, "admin-homes-header", Map.of(
+                "player", args[1],
+                "count", String.valueOf(homes.size())
+        )));
+        homes.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> sender.sendMessage(messages.component(sender, "homes-line", Map.of(
+                        "home", entry.getKey(),
+                        "world", entry.getValue().worldName(),
+                        "x", String.valueOf(entry.getValue().blockX()),
+                        "y", String.valueOf(entry.getValue().blockY()),
+                        "z", String.valueOf(entry.getValue().blockZ())
+                ))));
         return true;
+    }
+
+    private boolean adminDeleteHome(CommandSender sender, String[] args) {
+        if (!ensurePermission(sender, PERMISSION_ADMIN)) {
+            return true;
+        }
+        if (args.length != 3) {
+            sender.sendMessage(messages.component(sender, "admin-delhome-usage"));
+            return true;
+        }
+        String homeName = PointStorage.normalizeHomeName(args[2]);
+        if (!isValidHomeName(homeName)) {
+            sender.sendMessage(messages.component(sender, "invalid-home-name"));
+            return true;
+        }
+
+        OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        PointMutationResult result = points.deleteHome(sender, target.getUniqueId(), homeName);
+        if (result == PointMutationResult.NOT_FOUND) {
+            sender.sendMessage(messages.component(sender, "admin-homes-empty", Map.of("player", args[1])));
+            return true;
+        }
+        if (result != PointMutationResult.SUCCESS) {
+            sender.sendMessage(messages.component(sender, "data-save-error"));
+            return true;
+        }
+
+        sender.sendMessage(messages.component(sender, "admin-delhome-done", Map.of(
+                "player", args[1],
+                "home", homeName
+        )));
+        return true;
+    }
+
+    private boolean adminPurge(CommandSender sender, String[] args) {
+        if (!ensurePermission(sender, PERMISSION_ADMIN)) {
+            return true;
+        }
+        if (args.length != 2) {
+            sender.sendMessage(messages.component(sender, "admin-purge-usage"));
+            return true;
+        }
+
+        OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        Map<String, StoredPoint> homes = storage.homes(target.getUniqueId());
+        if (homes.isEmpty()) {
+            sender.sendMessage(messages.component(sender, "admin-homes-empty", Map.of("player", args[1])));
+            return true;
+        }
+
+        int removed = 0;
+        for (String homeName : homes.keySet()) {
+            if (points.deleteHome(sender, target.getUniqueId(), homeName) == PointMutationResult.SUCCESS) {
+                removed++;
+            }
+        }
+        sender.sendMessage(messages.component(sender, "admin-purge-done", Map.of(
+                "player", args[1],
+                "count", String.valueOf(removed)
+        )));
+        return true;
+    }
+
+    private boolean adminImport(CommandSender sender, String[] args) {
+        if (!ensurePermission(sender, PERMISSION_ADMIN)) {
+            return true;
+        }
+        if (args.length != 2 || !args[1].equalsIgnoreCase("essentials")) {
+            sender.sendMessage(messages.component(sender, "admin-import-usage"));
+            return true;
+        }
+
+        EssentialsImporter.Result result = new EssentialsImporter(this, storage).importData();
+        if (result.homes() > 0 || result.warps() > 0) {
+            persistNow();
+        }
+        sender.sendMessage(messages.component(sender, "admin-import-done", Map.of(
+                "homes", String.valueOf(result.homes()),
+                "warps", String.valueOf(result.warps())
+        )));
+        return true;
+    }
+
+    private void persistNow() {
+        if (saveService != null && saveService.flush(10_000L)) {
+            saveService.saveNow();
+        }
+    }
+
+    private OfflinePlayer resolveOfflinePlayer(String name) {
+        Player online = getServer().getPlayerExact(name);
+        return online != null ? online : getServer().getOfflinePlayer(name);
     }
 
     private boolean reloadPlugin(CommandSender sender) {
@@ -333,10 +515,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 new HelpEntry("/warp [name]", "help-desc-warp", null),
                 new HelpEntry("/warps", "help-desc-warps", null),
                 new HelpEntry("/setspawn", "help-desc-setspawn", PERMISSION_SETSPAWN),
-                new HelpEntry("/setwarp <name> [--icon <material>] [description...]", "help-desc-setwarp", PERMISSION_SETWARP),
+                new HelpEntry("/setwarp <name> [--icon <material>] [--category <name>] [--private] [description...]", "help-desc-setwarp", PERMISSION_SETWARP),
                 new HelpEntry("/delwarp <name>", "help-desc-delwarp", PERMISSION_DELWARP),
                 new HelpEntry("/vp help [page]", "help-desc-vp-help", null),
-                new HelpEntry("/vp reload", "help-desc-vp-reload", PERMISSION_RELOAD)
+                new HelpEntry("/vp reload", "help-desc-vp-reload", PERMISSION_RELOAD),
+                new HelpEntry("/vp homes <player>", "help-desc-vp-homes", PERMISSION_ADMIN),
+                new HelpEntry("/vp delhome <player> <name>", "help-desc-vp-delhome", PERMISSION_ADMIN),
+                new HelpEntry("/vp purge <player>", "help-desc-vp-purge", PERMISSION_ADMIN),
+                new HelpEntry("/vp import essentials", "help-desc-vp-import", PERMISSION_ADMIN)
         );
     }
 
@@ -348,11 +534,13 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        PointMutationResult result = points.setSpawn(player, player.getLocation());
+        String spawnWorld = spawnPerWorld ? player.getWorld().getName() : null;
+        PointMutationResult result = points.setSpawn(player, spawnWorld, player.getLocation());
         if (!handleMutationResult(player, result, null)) {
             return true;
         }
         player.sendMessage(messages.component(player, "spawn-set"));
+        playFeedback(player, "spawn-set");
         return true;
     }
 
@@ -361,8 +549,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        StoredPoint spawn = storage.spawn()
-                .orElseGet(() -> StoredPoint.fromLocation(player.getWorld().getSpawnLocation(), true));
+        Optional<StoredPoint> stored = spawnPerWorld
+                ? storage.spawn(player.getWorld().getName()).or(storage::spawn)
+                : storage.spawn();
+        StoredPoint spawn = stored.orElseGet(() -> StoredPoint.fromLocation(player.getWorld().getSpawnLocation(), true));
 
         sendPointMessage(player, "spawn-location", spawn, Map.of());
         return true;
@@ -476,14 +666,22 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         )));
         homes.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> player.sendMessage(messages.component(player, "homes-line", Map.of(
-                        "home", entry.getKey(),
-                        "world", entry.getValue().worldName(),
-                        "x", String.valueOf(entry.getValue().blockX()),
-                        "y", String.valueOf(entry.getValue().blockY()),
-                        "z", String.valueOf(entry.getValue().blockZ())
-                ))));
+                .forEach(entry -> player.sendMessage(buildHomeLine(player, entry.getKey(), entry.getValue())));
         return true;
+    }
+
+    private Component buildHomeLine(Player player, String homeName, StoredPoint point) {
+        Map<String, String> placeholders = Map.of(
+                "home", homeName,
+                "world", point.worldName(),
+                "x", String.valueOf(point.blockX()),
+                "y", String.valueOf(point.blockY()),
+                "z", String.valueOf(point.blockZ())
+        );
+        return LegacyComponentSerializer.legacyAmpersand()
+                .deserialize(messages.text(player, "homes-line", placeholders))
+                .clickEvent(ClickEvent.copyToClipboard(applyPlaceholders(copyFormat, placeholders)))
+                .hoverEvent(HoverEvent.showText(messages.component(player, "coordinates-hover-text")));
     }
 
     private boolean deleteHome(Player player, String[] args) {
@@ -540,7 +738,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 player,
                 warpName,
                 player.getLocation(),
-                new PointMetadata(input.description(), input.icon(), player.getName(), Instant.now().getEpochSecond())
+                new PointMetadata(input.description(), input.icon(), input.category(), input.publicVisible(), player.getName(), Instant.now().getEpochSecond())
         );
         if (!handleMutationResult(player, result, warpName)) {
             return true;
@@ -552,6 +750,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private WarpInput parseWarpInput(Player player, String[] args) {
         String icon = "";
+        String category = "";
+        boolean publicVisible = true;
         List<String> descriptionParts = new ArrayList<>();
         for (int index = 1; index < args.length; index++) {
             String argument = args[index];
@@ -568,12 +768,27 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                     return null;
                 }
                 icon = validatedIcon.get();
+            } else if (argument.equalsIgnoreCase("--category")) {
+                if (index + 1 >= args.length) {
+                    player.sendMessage(messages.component(player, "setwarp-usage"));
+                    return null;
+                }
+                String rawCategory = args[++index];
+                if (!PointStorage.isValidWarpName(rawCategory)) {
+                    player.sendMessage(messages.component(player, "invalid-warp-category", Map.of("category", rawCategory)));
+                    return null;
+                }
+                category = rawCategory.toLowerCase(Locale.ROOT);
+            } else if (argument.equalsIgnoreCase("--private")) {
+                publicVisible = false;
+            } else if (argument.equalsIgnoreCase("--public")) {
+                publicVisible = true;
             } else {
                 descriptionParts.add(argument);
             }
         }
 
-        return new WarpInput(String.join(" ", descriptionParts).trim(), icon);
+        return new WarpInput(String.join(" ", descriptionParts).trim(), icon, category, publicVisible);
     }
 
     private Optional<String> validateWarpIcon(String icon) {
@@ -606,7 +821,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
         String warpName = PointStorage.normalizeWarpName(args[0]);
         Optional<StoredPoint> warp = storage.warp(warpName);
-        if (warp.isEmpty()) {
+        if (warp.isEmpty() || !canSeeWarp(player, warp.get())) {
             player.sendMessage(messages.component(player, "warp-not-set", Map.of("warp", warpName)));
             return true;
         }
@@ -616,6 +831,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         sendInfoCard(player, point, Map.of("point", warpName));
         if (!point.description().isBlank()) {
             player.sendMessage(messages.component(player, "warp-description", Map.of("description", point.description())));
+        }
+        if (!point.category().isBlank()) {
+            player.sendMessage(messages.component(player, "warp-category", Map.of("category", point.category())));
+        }
+        if (!point.publicVisible()) {
+            player.sendMessage(messages.component(player, "warp-private-flag"));
         }
         return true;
     }
@@ -731,14 +952,38 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private boolean sendWarpsList(CommandSender sender) {
-        Set<String> warpNames = storage.warpNames();
-        if (warpNames.isEmpty()) {
+        List<String> visible = storage.warpNames().stream()
+                .filter(name -> {
+                    Optional<StoredPoint> warp = storage.warp(name);
+                    return warp.isPresent() && canSeeWarp(sender, warp.get());
+                })
+                .map(this::warpDisplayName)
+                .collect(Collectors.toCollection(ArrayList::new));
+        if (visible.isEmpty()) {
             sender.sendMessage(messages.component(sender, "no-warps"));
             return true;
         }
 
-        sender.sendMessage(messages.component(sender, "available-warps", Map.of("warps", String.join(", ", warpNames))));
+        sender.sendMessage(messages.component(sender, "available-warps", Map.of("warps", String.join(", ", visible))));
         return true;
+    }
+
+    private String warpDisplayName(String name) {
+        String category = storage.warp(name).map(StoredPoint::category).orElse("");
+        return category.isBlank() ? name : name + " [" + category + "]";
+    }
+
+    private boolean canSeeWarp(CommandSender sender, StoredPoint warp) {
+        if (warp.publicVisible()) {
+            return true;
+        }
+        if (!(sender instanceof Player player)) {
+            return true;
+        }
+        if (player.hasPermission(PERMISSION_WARP_PRIVATE) || player.hasPermission(PERMISSION_ADMIN)) {
+            return true;
+        }
+        return !warp.createdBy().isBlank() && warp.createdBy().equalsIgnoreCase(player.getName());
     }
 
     private void sendPointMessage(Player player, String messageKey, StoredPoint point, Map<String, String> extraPlaceholders) {
@@ -807,7 +1052,22 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return messages.text(player, "info-card-unknown");
         }
         Biome biome = world.getBiome(point.blockX(), point.blockY(), point.blockZ());
-        return biome.key().asString();
+        return prettifyKey(biome.key().value());
+    }
+
+    private String prettifyKey(String value) {
+        String[] words = value.replace('_', ' ').trim().split(" ");
+        StringBuilder builder = new StringBuilder();
+        for (String word : words) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            builder.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
+        }
+        return builder.toString();
     }
 
     private String pointTime(Player player, StoredPoint point) {
@@ -840,157 +1100,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private void playFeedback(Player player, String eventKey) {
-        String eventPath = "feedback.events." + eventKey;
-        if (getConfig().getBoolean("feedback.sounds", true)) {
-            playConfiguredSound(player, eventPath);
-        }
-        if (getConfig().getBoolean("feedback.particles", true)) {
-            spawnConfiguredParticle(player, eventPath);
-        }
-    }
-
-    private void playConfiguredSound(Player player, String eventPath) {
-        String soundName = getConfig().getString(eventPath + ".sound", "");
-        if (soundName == null || soundName.isBlank()) {
-            return;
-        }
-
-        NamespacedKey key = soundKey(soundName);
-        Sound sound = key == null ? null : Registry.SOUNDS.get(key);
-        if (sound == null) {
-            getLogger().warning("Invalid feedback sound '" + soundName + "' at " + eventPath + ".sound");
-            return;
-        }
-
-        float volume = (float) Math.max(0.0D, getConfig().getDouble(eventPath + ".volume", 1.0D));
-        float pitch = (float) Math.max(0.01D, getConfig().getDouble(eventPath + ".pitch", 1.0D));
-        player.playSound(player.getLocation(), sound, volume, pitch);
-    }
-
-    private NamespacedKey soundKey(String soundName) {
-        String normalized = soundName.trim().toLowerCase(Locale.ROOT).replace('_', '.');
-        try {
-            if (normalized.contains(":")) {
-                return NamespacedKey.fromString(normalized);
-            }
-            return NamespacedKey.minecraft(normalized);
-        } catch (IllegalArgumentException exception) {
-            return null;
-        }
-    }
-
-    private void spawnConfiguredParticle(Player player, String eventPath) {
-        String particleName = getConfig().getString(eventPath + ".particle", "");
-        if (particleName == null || particleName.isBlank()) {
-            return;
-        }
-
-        try {
-            Particle particle = Particle.valueOf(particleName.toUpperCase(Locale.ROOT));
-            if (particle.getDataType() != Void.class) {
-                getLogger().warning("Feedback particle '" + particleName + "' at " + eventPath
-                        + ".particle requires data and was skipped.");
-                return;
-            }
-
-            int count = Math.max(0, getConfig().getInt(eventPath + ".count", 8));
-            if (count == 0) {
-                return;
-            }
-
-            Location location = player.getLocation().add(0.0D, 1.0D, 0.0D);
-            player.spawnParticle(particle, location, count, 0.35D, 0.45D, 0.35D);
-        } catch (IllegalArgumentException exception) {
-            getLogger().warning("Invalid feedback particle '" + particleName + "' at " + eventPath + ".particle");
-        }
+        feedback.play(player, eventKey);
     }
 
     private boolean checkCommandLimits(Player player, String commandName) {
-        if (hasConfiguredPermission(player, "cooldowns.bypass-permission", PERMISSION_BYPASS_COOLDOWN)) {
-            return true;
-        }
-
-        long now = System.currentTimeMillis();
-        if (!checkRateLimit(player, now)) {
-            return false;
-        }
-
-        long cooldownMillis = cooldownMillis(commandName);
-        if (cooldownMillis > 0L) {
-            Long lastUsedAt = cooldowns
-                    .getOrDefault(player.getUniqueId(), Map.of())
-                    .get(commandName);
-            if (lastUsedAt != null) {
-                long remainingMillis = cooldownMillis - (now - lastUsedAt);
-                if (remainingMillis > 0L) {
-                    player.sendMessage(messages.component(player, "cooldown-active", Map.of("time", formatDuration(remainingMillis))));
-                    return false;
-                }
-            }
-        }
-
-        recordCommandUsage(player.getUniqueId(), commandName, now, cooldownMillis);
-        return true;
-    }
-
-    private boolean checkRateLimit(Player player, long now) {
-        long windowMillis = configDurationMillis("rate-limit.window", "60s");
-        int maxCommands = getConfig().getInt("rate-limit.max-commands", 30);
-        if (windowMillis <= 0L || maxCommands <= 0) {
-            return true;
-        }
-
-        Deque<Long> window = commandWindows.computeIfAbsent(player.getUniqueId(), ignored -> new ArrayDeque<>());
-        pruneCommandWindow(window, now, windowMillis);
-        if (window.size() >= maxCommands) {
-            Long oldestCommandAt = window.peekFirst();
-            long remainingMillis = oldestCommandAt == null ? windowMillis : oldestCommandAt + windowMillis - now;
-            player.sendMessage(messages.component(player, "rate-limit-active", Map.of("time", formatDuration(Math.max(1L, remainingMillis)))));
-            return false;
-        }
-        return true;
-    }
-
-    private void pruneCommandWindow(Deque<Long> window, long now, long windowMillis) {
-        while (!window.isEmpty() && now - window.peekFirst() >= windowMillis) {
-            window.removeFirst();
-        }
-    }
-
-    private void recordCommandUsage(UUID playerId, String commandName, long now, long cooldownMillis) {
-        long windowMillis = configDurationMillis("rate-limit.window", "60s");
-        int maxCommands = getConfig().getInt("rate-limit.max-commands", 30);
-        if (windowMillis > 0L && maxCommands > 0) {
-            commandWindows.computeIfAbsent(playerId, ignored -> new ArrayDeque<>()).addLast(now);
-        }
-        if (cooldownMillis > 0L) {
-            cooldowns.computeIfAbsent(playerId, ignored -> new HashMap<>()).put(commandName, now);
-        }
-        pruneCommandLimits(playerId, now);
-    }
-
-    private void pruneCommandLimits(UUID playerId, long now) {
-        long windowMillis = configDurationMillis("rate-limit.window", "60s");
-        Deque<Long> window = commandWindows.get(playerId);
-        if (window != null) {
-            pruneCommandWindow(window, now, windowMillis);
-            if (window.isEmpty()) {
-                commandWindows.remove(playerId);
-            }
-        }
-
-        Map<String, Long> playerCooldowns = cooldowns.get(playerId);
-        if (playerCooldowns != null) {
-            playerCooldowns.entrySet().removeIf(entry -> now - entry.getValue() >= cooldownMillis(entry.getKey()));
-            if (playerCooldowns.isEmpty()) {
-                cooldowns.remove(playerId);
-            }
-        }
-    }
-
-    private long cooldownMillis(String commandName) {
-        long defaultMillis = configDurationMillis("cooldowns.default", "2s");
-        return configDurationMillis("cooldowns.per-command." + commandName, defaultMillis);
+        return commandLimits.check(player, commandName);
     }
 
     private long configDurationMillis(String path, String defaultValue) {
@@ -1006,56 +1120,18 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private long parseDurationMillis(Object value, long defaultMillis) {
-        if (value instanceof Number number) {
-            return Math.max(0L, Math.round(number.doubleValue() * 1000.0D));
-        }
-
-        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
-        if (text.isBlank()) {
+        java.util.OptionalLong parsed = Durations.parse(value);
+        if (parsed.isEmpty()) {
+            if (value != null && !String.valueOf(value).isBlank()) {
+                getLogger().warning("Invalid duration value '" + value + "', using default " + formatDuration(defaultMillis) + ".");
+            }
             return defaultMillis;
         }
-
-        long multiplier = 1000L;
-        String numberText = text;
-        if (text.endsWith("ms")) {
-            multiplier = 1L;
-            numberText = text.substring(0, text.length() - 2);
-        } else if (text.endsWith("s")) {
-            multiplier = 1000L;
-            numberText = text.substring(0, text.length() - 1);
-        } else if (text.endsWith("m")) {
-            multiplier = 60_000L;
-            numberText = text.substring(0, text.length() - 1);
-        } else if (text.endsWith("h")) {
-            multiplier = 3_600_000L;
-            numberText = text.substring(0, text.length() - 1);
-        }
-
-        try {
-            double amount = Double.parseDouble(numberText.trim());
-            return Math.max(0L, (long) Math.ceil(amount * multiplier));
-        } catch (NumberFormatException exception) {
-            getLogger().warning("Invalid duration value '" + value + "', using default " + formatDuration(defaultMillis) + ".");
-            return defaultMillis;
-        }
+        return parsed.getAsLong();
     }
 
     private String formatDuration(long millis) {
-        if (millis < 1000L) {
-            return "1s";
-        }
-
-        long seconds = (millis + 999L) / 1000L;
-        if (seconds < 60L) {
-            return seconds + "s";
-        }
-
-        long minutes = seconds / 60L;
-        long remainingSeconds = seconds % 60L;
-        if (remainingSeconds == 0L) {
-            return minutes + "m";
-        }
-        return minutes + "m " + remainingSeconds + "s";
+        return Durations.format(millis);
     }
 
     private void removeExpiredPendingDeletions() {
@@ -1174,7 +1250,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return completeSetWarp(args);
         }
         if (commandName.equals("warp")) {
-            return completeWarpNames(args);
+            return completeWarpNames(sender, args);
         }
         if (commandName.equals("home") || commandName.equals("delhome")) {
             return completeHomeNames(sender, args);
@@ -1193,23 +1269,50 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             if (sender.hasPermission(PERMISSION_RELOAD)) {
                 completions.add("reload");
             }
+            if (sender.hasPermission(PERMISSION_ADMIN)) {
+                completions.add("homes");
+                completions.add("delhome");
+                completions.add("purge");
+                completions.add("import");
+            }
             return filterByPrefix(completions, args[0]);
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("import") && sender.hasPermission(PERMISSION_ADMIN)) {
+            return filterByPrefix(List.of("essentials"), args[1]);
         }
         return List.of();
     }
 
     private List<String> completeSetWarp(String[] args) {
-        if (args.length == 2 && "--icon".startsWith(args[1].toLowerCase(Locale.ROOT))) {
-            return List.of("--icon");
+        if (args.length < 2) {
+            return List.of();
         }
-        return List.of();
+
+        String previous = args[args.length - 2];
+        if (previous.equalsIgnoreCase("--icon")) {
+            return filterByPrefix(itemMaterialNames(), args[args.length - 1]);
+        }
+        if (previous.equalsIgnoreCase("--category")) {
+            return List.of();
+        }
+        return filterByPrefix(List.of("--icon", "--category", "--private", "--public"), args[args.length - 1]);
     }
 
-    private List<String> completeWarpNames(String[] args) {
+    private List<String> itemMaterialNames() {
+        return Stream.of(Material.values())
+                .filter(material -> material.isItem() && !material.isLegacy() && !material.isAir())
+                .map(material -> material.name().toLowerCase(Locale.ROOT))
+                .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    private List<String> completeWarpNames(CommandSender sender, String[] args) {
         if (args.length != 1) {
             return List.of();
         }
-        return filterByPrefix(new ArrayList<>(storage.warpNames()), args[0]);
+        List<String> names = storage.warpNames().stream()
+                .filter(name -> storage.warp(name).map(warp -> canSeeWarp(sender, warp)).orElse(false))
+                .collect(Collectors.toCollection(ArrayList::new));
+        return filterByPrefix(names, args[0]);
     }
 
     private List<String> completeHomeNames(CommandSender sender, String[] args) {
@@ -1225,7 +1328,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         if (args.length == 1) {
-            return completeWarpNames(args);
+            return completeWarpNames(sender, args);
         }
         if (args.length == 2 && sender instanceof Player player && isValidWarpName(args[0])) {
             PendingWarpDeletion pendingDeletion = pendingWarpDeletions.get(player.getUniqueId());
@@ -1250,6 +1353,6 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private record HelpEntry(String command, String descriptionKey, String permission) {
     }
 
-    private record WarpInput(String description, String icon) {
+    private record WarpInput(String description, String icon, String category, boolean publicVisible) {
     }
 }

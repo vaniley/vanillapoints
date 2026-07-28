@@ -13,6 +13,14 @@ import java.util.UUID;
 public interface VanillaPointsAPI {
     Optional<Location> getSpawn();
 
+    Optional<Location> getSpawn(String worldName);
+
+    Optional<PointInfo> getSpawnInfo(String worldName);
+
+    boolean setSpawn(String worldName, Location location);
+
+    boolean deleteSpawn(String worldName);
+
     Optional<Location> getHome(UUID playerId);
 
     Optional<Location> getHome(UUID playerId, String name);

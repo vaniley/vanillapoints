@@ -28,9 +28,15 @@ status=0
 
 for file in "$resources_dir"/messages_*.yml; do
   [[ -e "$file" ]] || continue
-  extract_keys "$file" > "$tmp_dir/$(basename "$file").keys"
-  if ! diff -u "$tmp_dir/default.keys" "$tmp_dir/$(basename "$file").keys"; then
-    printf 'Message key mismatch in %s\n' "$file" >&2
+  keys_file="$tmp_dir/$(basename "$file").keys"
+  extract_keys "$file" > "$keys_file"
+
+  # Missing translations are valid: MessageService falls back to messages.yml.
+  # Unknown keys are usually typos and can never be resolved, so keep those fatal.
+  comm -23 "$keys_file" "$tmp_dir/default.keys" > "$tmp_dir/unknown.keys"
+  if [[ -s "$tmp_dir/unknown.keys" ]]; then
+    printf 'Unknown message keys in %s:\n' "$file" >&2
+    sed 's/^/  /' "$tmp_dir/unknown.keys" >&2
     status=1
   fi
 done

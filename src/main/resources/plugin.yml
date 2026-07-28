@@ -1,8 +1,13 @@
 name: VanillaPoints
 version: ${project.version}
 main: dev.vaniley.vanillapoints.VanillaPoints
-api-version: '1.21'
+api-version: '26.2'
+author: Lazarrew
 softdepend: [PlaceholderAPI]
+libraries:
+  - org.xerial:sqlite-jdbc:3.49.1.0
+  - com.mysql:mysql-connector-j:9.2.0
+  - com.zaxxer:HikariCP:6.2.1
 
 commands:
   setspawn:
@@ -28,7 +33,7 @@ commands:
     usage: /delhome <name>
   setwarp:
     description: Set a warp point
-    usage: /setwarp <name> [--icon <material>] [description...]
+    usage: /setwarp <name> [--icon <material>] [--category <name>] [--private] [description...]
   warp:
     description: Get warp point coordinates or list warps
     usage: /warp [name]
@@ -56,6 +61,15 @@ permissions:
     default: op
   vanillapoints.reload:
     description: Allows reloading VanillaPoints config, messages and data
+    default: op
+  vanillapoints.admin:
+    description: Allows VanillaPoints admin commands (manage other players' homes, purge, import)
+    default: op
+  vanillapoints.warp.private:
+    description: Allows seeing and using private warps created by other players
+    default: op
+  vanillapoints.update.notify:
+    description: Receives a chat notification on join when a VanillaPoints update is available
     default: op
   vanillapoints.bypass.cooldown:
     description: Bypasses VanillaPoints cooldowns and rate limits

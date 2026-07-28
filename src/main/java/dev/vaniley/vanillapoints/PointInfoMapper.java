@@ -17,6 +17,8 @@ final class PointInfoMapper {
                 point.pitch(),
                 point.description(),
                 point.icon(),
+                point.category(),
+                point.publicVisible(),
                 point.createdBy(),
                 point.createdAt()
         );
@@ -26,6 +28,13 @@ final class PointInfoMapper {
         if (metadata == null) {
             return point;
         }
-        return point.withMetadata(metadata.description(), metadata.icon(), metadata.createdBy(), metadata.createdAt());
+        return point.withMetadata(
+                metadata.description(),
+                metadata.icon(),
+                metadata.category(),
+                metadata.publicVisible(),
+                metadata.createdBy(),
+                metadata.createdAt()
+        );
     }
 }

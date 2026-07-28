@@ -36,6 +36,10 @@ final class PointService {
         return storage.spawn();
     }
 
+    Optional<StoredPoint> spawn(String worldName) {
+        return storage.spawn(worldName);
+    }
+
     Optional<StoredPoint> home(UUID playerId) {
         return storage.home(playerId);
     }
@@ -57,18 +61,36 @@ final class PointService {
     }
 
     PointMutationResult setSpawn(CommandSender actor, Location location) {
+        return setSpawn(actor, null, location);
+    }
+
+    PointMutationResult setSpawn(CommandSender actor, String worldName, Location location) {
         if (!ensureMainThread("setSpawn")) {
             return PointMutationResult.INVALID;
         }
 
         StoredPoint point = StoredPoint.fromLocation(location, normalizeToBlock);
-        SpawnSetEvent event = new SpawnSetEvent(actorId(actor), actorName(actor), storage.spawn().map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
+        StoredPoint old = storage.spawn(worldName).orElse(null);
+        SpawnSetEvent event = new SpawnSetEvent(actorId(actor), actorName(actor), old == null ? null : PointInfoMapper.toInfo(old), PointInfoMapper.toInfo(point));
         Bukkit.getPluginManager().callEvent(event);
         if (event.isCancelled()) {
             return PointMutationResult.CANCELLED;
         }
 
-        storage.setSpawn(point);
+        storage.setSpawn(worldName, point);
+        requestSave(actor);
+        return PointMutationResult.SUCCESS;
+    }
+
+    PointMutationResult deleteSpawn(CommandSender actor, String worldName) {
+        if (!ensureMainThread("deleteSpawn")) {
+            return PointMutationResult.INVALID;
+        }
+        if (storage.spawn(worldName).isEmpty()) {
+            return PointMutationResult.NOT_FOUND;
+        }
+
+        storage.deleteSpawn(worldName);
         requestSave(actor);
         return PointMutationResult.SUCCESS;
     }
