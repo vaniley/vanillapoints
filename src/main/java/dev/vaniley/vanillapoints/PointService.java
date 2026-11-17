@@ -94,14 +94,8 @@ final class PointService {
             return PointMutationResult.INVALID;
         }
 
-        return mutate(actor, () -> {
-            if (storage.spawn(worldName).isEmpty()) {
-                return PointMutationResult.NOT_FOUND;
-            }
-
-            storage.deleteSpawn(worldName);
-            return PointMutationResult.SUCCESS;
-        });
+        return mutate(actor, () -> storage.deleteSpawn(worldName)
+                ? PointMutationResult.SUCCESS : PointMutationResult.NOT_FOUND);
     }
 
     PointMutationResult setHome(CommandSender actor, UUID playerId, Location location) {
@@ -126,13 +120,14 @@ final class PointService {
             }
 
             String normalizedName = PointStorage.normalizeHomeName(name);
+            Optional<StoredPoint> existing = storage.home(playerId, normalizedName);
             if (maxHomes != Integer.MAX_VALUE
-                    && storage.home(playerId, normalizedName).isEmpty()
+                    && existing.isEmpty()
                     && storage.homes(playerId).size() >= maxHomes) {
                 return PointMutationResult.LIMIT_REACHED;
             }
             StoredPoint point = PointInfoMapper.applyMetadata(StoredPoint.fromLocation(location, normalizeToBlock), metadata);
-            HomeSetEvent event = new HomeSetEvent(actorId(actor), actorName(actor), playerId, storage.home(playerId, normalizedName).map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
+            HomeSetEvent event = new HomeSetEvent(actorId(actor), actorName(actor), playerId, existing.map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
             Bukkit.getPluginManager().callEvent(event);
             if (event.isCancelled()) {
                 return PointMutationResult.CANCELLED;

@@ -96,3 +96,4 @@ admin-import-usage: '&c用法： /vp import essentials'
 admin-import-done: '&a导入完成： &f{homes} &a家园和 &f{warps} &a进口经纱。'
 
 admin-player-unknown: '&c未知玩家 {player}。请使用已缓存的玩家名称或 UUID。'
+operation-in-progress: '&e操作正在进行中，请稍后重试。'

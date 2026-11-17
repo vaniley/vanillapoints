@@ -96,3 +96,4 @@ admin-import-usage: '&c使用法： /vp import essentials'
 admin-import-done: '&aインポートが完了しました: &f{homes} &a家と &f{warps} &a経糸が輸入されました。'
 
 admin-player-unknown: '&c不明なプレイヤー {player}。キャッシュ済みの名前または UUID を使用してください。'
+operation-in-progress: '&e処理中です。しばらくしてから再試行してください。'

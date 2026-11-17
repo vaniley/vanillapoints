@@ -23,7 +23,10 @@ import java.util.UUID;
  * not modify an input Location concurrently with a mutation.</p>
  *
  * <p>Retained API references follow the active service across reloads. When the plugin
- * is disabled, reads return empty snapshots and mutations return {@code false}.
+ * is disabled or reload/maintenance prevents immediate service access, reads return empty
+ * snapshots and mutations return {@code false}; callers never wait for a lifecycle write lock.
+ * Consumers should retry after a queued reload completes instead of waiting or busy-looping
+ * on a server tick thread.
  * {@link #reload()} queues lifecycle work on the global scheduler and may be called
  * from any thread; it does not complete the reload before returning.</p>
  */

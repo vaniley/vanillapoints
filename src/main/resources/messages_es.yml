@@ -96,3 +96,4 @@ admin-import-usage: '&cUso: /vp import essentials'
 admin-import-done: '&aImportación completa: &f{homes} &ahogares y &f{warps} &adeformaciones importadas.'
 
 admin-player-unknown: '&cJugador desconocido: {player}. Usa un nombre en caché o un UUID.'
+operation-in-progress: '&eHay una operación en curso. Inténtalo de nuevo en breve.'

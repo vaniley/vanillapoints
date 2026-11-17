@@ -156,13 +156,13 @@ final class VanillaPointsApiProvider implements VanillaPointsAPI {
     }
 
     private <T> T withPoints(Function<PointService, T> operation, T unavailable) {
-        return plugin.withState(() -> {
+        return plugin.tryWithState(() -> {
             if (!plugin.isEnabled()) {
                 return unavailable;
             }
             PointService points = plugin.currentPoints();
             return points == null ? unavailable : operation.apply(points);
-        });
+        }, unavailable);
     }
 
     private void requireServerThread() {

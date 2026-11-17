@@ -96,3 +96,4 @@ admin-import-usage: '&cВикористання: /vp import essentials'
 admin-import-done: '&aІмпорт завершено: &f{homes} &aбудинки і &f{warps} &aоснови імпортні.'
 
 admin-player-unknown: '&cГравець {player} невідомий. Укажіть ім’я гравця з кешу або UUID.'
+operation-in-progress: '&eОперація вже виконується. Спробуйте ще раз трохи пізніше.'

@@ -15,10 +15,12 @@ import org.bukkit.block.Biome;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.BlockCommandSender;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Entity;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -55,25 +57,35 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private final ReentrantReadWriteLock stateLock = new ReentrantReadWriteLock();
     private final AtomicBoolean reloadQueued = new AtomicBoolean();
     private final AtomicBoolean importQueued = new AtomicBoolean();
+    private PluginState pendingReloadState;
     private List<String> cachedItemMaterialNames = List.of();
 
-    private MessageService messages;
+    private volatile MessageService messages;
     private PointStorage storage;
     private AsyncSaveService saveService;
     private PointService points;
     private VanillaPointsApiProvider apiProvider;
     private PlaceholderApiIntegration placeholderApiIntegration;
     private UpdateChecker updateChecker;
-    private CommandLimitService commandLimits;
+    private volatile CommandLimitService commandLimits;
     private FeedbackService feedback;
     private boolean saveImmediately;
     private boolean normalizeToBlock;
     private boolean spawnPerWorld;
     private String copyFormat;
 
-    <T> T withState(Supplier<T> action) {
-        stateLock.readLock().lock();
+    <T> T tryWithState(Supplier<T> action, T fallback) {
+        // Never park a Folia region behind slow reload preparation or a storage connection.
+        if (reloadQueued.get() && stateLock.getReadHoldCount() == 0) {
+            return fallback;
+        }
+        if (!stateLock.readLock().tryLock()) {
+            return fallback;
+        }
         try {
+            if (reloadQueued.get() && stateLock.getReadHoldCount() == 1) {
+                return fallback;
+            }
             return action.get();
         } finally {
             stateLock.readLock().unlock();
@@ -89,22 +101,20 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     void clearPlayerState(UUID playerId) {
-        withState(() -> {
-            if (commandLimits != null) {
-                commandLimits.clear(playerId);
-            }
-            pendingWarpDeletions.remove(playerId);
-            return null;
-        });
+        CommandLimitService currentLimits = commandLimits;
+        if (currentLimits != null) {
+            currentLimits.clear(playerId);
+        }
+        pendingWarpDeletions.remove(playerId);
     }
 
     void notifyUpdate(Player player) {
-        withState(() -> {
+        tryWithState(() -> {
             if (updateChecker != null) {
                 updateChecker.notifyIfAdmin(player);
             }
             return null;
-        });
+        }, null);
     }
 
     @Override
@@ -163,6 +173,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         try {
             unregisterPlaceholderApi();
             unregisterApi();
+            if (pendingReloadState != null) {
+                closeCandidate(pendingReloadState);
+                pendingReloadState = null;
+            }
             flushAndCloseStorage();
             pendingWarpDeletions.clear();
         } finally {
@@ -182,35 +196,67 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private void loadPluginState() {
+        applyPluginState(preparePluginState());
+    }
+
+    /** Creates detached services; callers prevent commands from observing the candidate config. */
+    private PluginState preparePluginState() {
         reloadConfig();
-        // Validate the replacement before detaching the working storage and API.
         PointStorage replacementStorage = PointStorageFactory.create(this);
+        try {
+            MessageService replacementMessages = new MessageService(this);
+            replacementMessages.load();
+            CommandLimitService replacementLimits = new CommandLimitService(this, replacementMessages);
+            FeedbackService replacementFeedback = new FeedbackService(this);
+            AsyncSaveService replacementSave = new AsyncSaveService(this, replacementStorage, replacementMessages);
+            boolean replacementNormalize = getConfig().getBoolean("settings.normalize-to-block", true);
+            boolean replacementImmediate = getConfig().getBoolean("settings.save-immediately", true);
+            boolean replacementPerWorld = getConfig().getBoolean("spawn.per-world", false);
+            String replacementFormat = getConfig().getString("settings.copy-format", DEFAULT_COPY_FORMAT);
+            if (replacementFormat == null || replacementFormat.isBlank()) {
+                replacementFormat = DEFAULT_COPY_FORMAT;
+            }
+            PointService replacementPoints = new PointService(this, replacementStorage, replacementSave,
+                    replacementNormalize, replacementImmediate);
+            return new PluginState(replacementStorage, replacementMessages, replacementLimits, replacementFeedback,
+                    replacementSave, replacementPoints, replacementNormalize, replacementImmediate,
+                    replacementPerWorld, replacementFormat);
+        } catch (RuntimeException exception) {
+            try {
+                replacementStorage.close();
+            } catch (RuntimeException closeException) {
+                exception.addSuppressed(closeException);
+            }
+            throw exception;
+        }
+    }
+
+    /** Runs only at enable or on the global scheduler; all slow construction finished beforehand. */
+    private void applyPluginState(PluginState replacement) {
         if (saveService != null && !saveService.retireIfClean()) {
-            replacementStorage.close();
             throw new StorageException("Existing storage still has pending writes; reload was cancelled.");
         }
         unregisterPlaceholderApi();
-
-        saveImmediately = getConfig().getBoolean("settings.save-immediately", true);
-        normalizeToBlock = getConfig().getBoolean("settings.normalize-to-block", true);
-        spawnPerWorld = getConfig().getBoolean("spawn.per-world", false);
-        copyFormat = getConfig().getString("settings.copy-format", DEFAULT_COPY_FORMAT);
-        if (copyFormat == null || copyFormat.isBlank()) {
-            copyFormat = DEFAULT_COPY_FORMAT;
-        }
-
-        messages = new MessageService(this);
-        messages.load();
-        commandLimits = new CommandLimitService(this, messages);
-        feedback = new FeedbackService(this);
-
+        unregisterApi();
         closeStorageOnly();
-        storage = replacementStorage;
-        saveService = new AsyncSaveService(this, storage, messages);
-        points = new PointService(this, storage, saveService, normalizeToBlock, saveImmediately);
+        storage = replacement.storage();
+        messages = replacement.messages();
+        commandLimits = replacement.commandLimits();
+        feedback = replacement.feedback();
+        saveService = replacement.saveService();
+        points = replacement.points();
+        normalizeToBlock = replacement.normalizeToBlock();
+        saveImmediately = replacement.saveImmediately();
+        spawnPerWorld = replacement.spawnPerWorld();
+        copyFormat = replacement.copyFormat();
+        pendingWarpDeletions.clear();
         registerApi();
         registerPlaceholderApi();
-        pendingWarpDeletions.clear();
+    }
+
+    private record PluginState(PointStorage storage, MessageService messages, CommandLimitService commandLimits,
+                               FeedbackService feedback, AsyncSaveService saveService, PointService points,
+                               boolean normalizeToBlock, boolean saveImmediately, boolean spawnPerWorld, String copyFormat) {
     }
 
     private void registerPlaceholderApi() {
@@ -252,41 +298,107 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private void queueReload(CommandSender sender) {
-        if (!isEnabled() || !reloadQueued.compareAndSet(false, true)) {
+        if (!isEnabled()) {
+            return;
+        }
+        if (!reloadQueued.compareAndSet(false, true)) {
+            if (sender != null) {
+                sendOnSenderThread(sender, "operation-in-progress");
+            }
             return;
         }
         try {
-            getServer().getGlobalRegionScheduler().run(this, task -> {
-                boolean success = false;
-                stateLock.writeLock().lock();
-                FileConfiguration previousConfig = getConfig();
-                try {
-                    if (isEnabled() && flushBeforeReload()) {
-                        loadPluginState();
-                        updateChecker = new UpdateChecker(this);
-                        updateChecker.checkAsync();
-                        success = true;
-                    }
-                } catch (StorageException exception) {
-                    // Keep live configuration consistent with the retained services after a failed replacement.
-                    FileConfiguration failedConfig = getConfig();
-                    for (String key : Set.copyOf(failedConfig.getKeys(false))) {
-                        failedConfig.set(key, null);
-                    }
-                    previousConfig.getValues(false).forEach(failedConfig::set);
-                    failedConfig.setDefaults(previousConfig.getDefaults());
-                    getLogger().log(Level.SEVERE, "Could not reload VanillaPoints storage; existing storage remains active.", exception);
-                } finally {
-                    stateLock.writeLock().unlock();
-                    reloadQueued.set(false);
-                }
-                if (sender != null) {
-                    sendOnSenderThread(sender, success ? "reload-complete" : "data-save-error");
-                }
-            });
+            getServer().getAsyncScheduler().runNow(this, task -> prepareReload(sender));
         } catch (RuntimeException exception) {
             reloadQueued.set(false);
             throw exception;
+        }
+    }
+
+    private void prepareReload(CommandSender sender) {
+        PluginState replacement = null;
+        FileConfiguration previousConfig = null;
+        boolean scheduled = false;
+        stateLock.writeLock().lock();
+        try {
+            if (!isEnabled()) {
+                return;
+            }
+            previousConfig = getConfig();
+            if (!flushBeforeReload()) {
+                return;
+            }
+            replacement = preparePluginState();
+            PluginState candidate = replacement;
+            pendingReloadState = candidate;
+            FileConfiguration original = previousConfig;
+            getServer().getGlobalRegionScheduler().run(this, task -> finishReload(sender, candidate, original));
+            scheduled = true;
+        } catch (RuntimeException exception) {
+            getLogger().log(Level.SEVERE, "Could not prepare VanillaPoints reload; existing services remain active.", exception);
+        } finally {
+            if (!scheduled) {
+                if (replacement != null) {
+                    closeCandidate(replacement);
+                }
+                pendingReloadState = null;
+                restoreConfig(previousConfig);
+                reloadQueued.set(false);
+            }
+            stateLock.writeLock().unlock();
+            if (!scheduled && sender != null) {
+                sendOnSenderThread(sender, "data-save-error");
+            }
+        }
+    }
+
+    private void finishReload(CommandSender sender, PluginState candidate, FileConfiguration original) {
+        boolean success = false;
+        stateLock.writeLock().lock();
+        try {
+            pendingReloadState = null;
+            if (!isEnabled()) {
+                closeCandidate(candidate);
+                return;
+            }
+            applyPluginState(candidate);
+            updateChecker = new UpdateChecker(this);
+            updateChecker.checkAsync();
+            success = true;
+        } catch (RuntimeException exception) {
+            if (storage != candidate.storage()) {
+                closeCandidate(candidate);
+                restoreConfig(original);
+            }
+            getLogger().log(Level.SEVERE, "Could not finish VanillaPoints reload.", exception);
+        } finally {
+            reloadQueued.set(false);
+            stateLock.writeLock().unlock();
+            if (sender != null) {
+                sendOnSenderThread(sender, success ? "reload-complete" : "data-save-error");
+            }
+        }
+    }
+
+    private void closeCandidate(PluginState candidate) {
+        try {
+            candidate.storage().close();
+        } catch (RuntimeException exception) {
+            getLogger().log(Level.WARNING, "Could not close rejected VanillaPoints storage.", exception);
+        }
+    }
+
+    private void restoreConfig(FileConfiguration original) {
+        if (original == null || original == getConfig()) {
+            return;
+        }
+        FileConfiguration failedConfig = getConfig();
+        for (String key : Set.copyOf(failedConfig.getKeys(false))) {
+            failedConfig.set(key, null);
+        }
+        original.getValues(false).forEach(failedConfig::set);
+        if (original.getDefaults() != null) {
+            failedConfig.setDefaults(original.getDefaults());
         }
     }
 
@@ -298,11 +410,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (!isEnabled()) {
             return;
         }
-        if (sender instanceof Player player) {
-            player.getScheduler().run(this, task -> withState(() -> {
-                player.sendMessage(messages.component(player, key, placeholders));
-                return null;
-            }), null);
+        if (sender instanceof Entity entity) {
+            entity.getScheduler().run(this,
+                    task -> sender.sendMessage(messages.component(sender, key, placeholders)), null);
+        } else if (sender instanceof BlockCommandSender blockSender) {
+            getServer().getRegionScheduler().run(this, blockSender.getBlock().getLocation(),
+                    task -> sender.sendMessage(messages.component(sender, key, placeholders)));
         } else {
             sender.sendMessage(messages.component(sender, key, placeholders));
         }
@@ -310,7 +423,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        return withState(() -> executeCommand(sender, command, label, args));
+        Boolean handled = tryWithState(() -> executeCommand(sender, command, label, args), null);
+        if (handled == null) {
+            sender.sendMessage(messages.component(sender, "operation-in-progress"));
+        }
+        return true;
     }
 
     private boolean executeCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -494,6 +611,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         if (!importQueued.compareAndSet(false, true)) {
+            sender.sendMessage(messages.component(sender, "operation-in-progress"));
             return true;
         }
         try {
@@ -502,7 +620,16 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                     // Parse files off-thread without holding the live state lock.
                     var imported = EssentialsImporter.readData(this);
                     getServer().getGlobalRegionScheduler().run(this, mergeTask -> {
-                        stateLock.writeLock().lock();
+                        if (reloadQueued.get()) {
+                            importQueued.set(false);
+                            sendOnSenderThread(sender, "operation-in-progress");
+                            return;
+                        }
+                        if (!stateLock.writeLock().tryLock()) {
+                            importQueued.set(false);
+                            sendOnSenderThread(sender, "operation-in-progress");
+                            return;
+                        }
                         try {
                             if (!isEnabled() || storage == null) {
                                 return;
@@ -1359,8 +1486,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         if (saveService != null) {
             if (!saveService.shutdown(10_000L)) {
                 // Never close a connection underneath a writer which exceeded the wait timeout.
-                getLogger().severe("Could not finish VanillaPoints shutdown save. Storage remains open to protect the active writer.");
+                getLogger().severe("Could not finish VanillaPoints shutdown save. Unsaved data may be lost; storage will close after the active writer exits.");
+                saveService.closeStorageWhenIdle();
                 points = null;
+                storage = null;
+                saveService = null;
                 return;
             }
         } else if (storage != null) {
@@ -1390,7 +1520,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        return withState(() -> completeCommand(sender, command, args));
+        return tryWithState(() -> completeCommand(sender, command, args), List.of());
     }
 
     private List<String> completeCommand(CommandSender sender, Command command, String[] args) {

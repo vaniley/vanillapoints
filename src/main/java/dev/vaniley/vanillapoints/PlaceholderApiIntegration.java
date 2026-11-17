@@ -44,12 +44,12 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
 
     @Override
     public String onRequest(OfflinePlayer player, String params) {
-        return plugin.withState(() -> request(player, player != null && player.isOnline() ? player.getPlayer() : null, params));
+        return plugin.tryWithState(() -> request(player, player != null && player.isOnline() ? player.getPlayer() : null, params), "");
     }
 
     @Override
     public String onPlaceholderRequest(Player player, String params) {
-        return plugin.withState(() -> request(player, player, params));
+        return plugin.tryWithState(() -> request(player, player, params), "");
     }
 
     private String request(OfflinePlayer offlinePlayer, Player player, String params) {

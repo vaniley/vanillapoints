@@ -24,6 +24,8 @@ final class AsyncSaveService {
     private boolean workerScheduled;
     private boolean writerRunning;
     private boolean retired;
+    private boolean closeRequested;
+    private boolean closeStarted;
     private Player latestNotifyPlayer;
 
     AsyncSaveService(JavaPlugin plugin, PointStorage storage, MessageService messages) {
@@ -88,7 +90,8 @@ final class AsyncSaveService {
     /**
      * Stops accepting requests and saves even mutations made with immediate saving disabled.
      * Queued scheduler callbacks become no-ops. Callers must quiesce mutations before shutdown,
-     * and must not close the storage unless this returns true.
+     * and must not close the storage directly unless this returns true. To abandon unsaved data
+     * after failure, use closeStorageWhenIdle() instead.
      */
     boolean shutdown(long timeoutMillis) {
         synchronized (monitor) {
@@ -114,6 +117,34 @@ final class AsyncSaveService {
         }
     }
 
+    /** Abandons further saves and closes retired storage once any active writer has exited. */
+    void closeStorageWhenIdle() {
+        synchronized (monitor) {
+            if (!retired) {
+                throw new IllegalStateException("Storage must be retired before requesting cleanup");
+            }
+            closeRequested = true;
+            latestNotifyPlayer = null;
+            invalidateQueuedWorker();
+            monitor.notifyAll();
+        }
+        closeStorageIfRequested();
+    }
+
+    private void closeStorageIfRequested() {
+        synchronized (monitor) {
+            if (!closeRequested || writerRunning || closeStarted) {
+                return;
+            }
+            closeStarted = true;
+        }
+        try {
+            storage.close();
+        } catch (RuntimeException exception) {
+            logger.log(Level.SEVERE, "Could not close VanillaPoints storage after shutdown.", exception);
+        }
+    }
+
     /**
      * Waits for an active writer, or takes over a queued save synchronously. The timeout bounds
      * waiting for another writer; storage I/O itself is bounded by the backend's I/O timeouts.
@@ -123,7 +154,7 @@ final class AsyncSaveService {
         long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMillis));
         long started = System.nanoTime();
         synchronized (monitor) {
-            while (writerRunning) {
+            while (writerRunning && !closeRequested) {
                 long remaining = timeoutNanos - (System.nanoTime() - started);
                 if (remaining <= 0L) {
                     logger.severe("Timed out while flushing VanillaPoints data.");
@@ -135,6 +166,9 @@ final class AsyncSaveService {
                     Thread.currentThread().interrupt();
                     return false;
                 }
+            }
+            if (closeRequested) {
+                return false;
             }
             invalidateQueuedWorker();
             if (savedRevision == requestedRevision) {
@@ -168,6 +202,9 @@ final class AsyncSaveService {
                 long revision;
                 Player notifyPlayer;
                 synchronized (monitor) {
+                    if (closeRequested) {
+                        return false;
+                    }
                     if (savedRevision == requestedRevision) {
                         latestNotifyPlayer = null;
                         // Release atomically with the clean check, so a new request cannot be stranded.
@@ -209,6 +246,7 @@ final class AsyncSaveService {
                     monitor.notifyAll();
                 }
             }
+            closeStorageIfRequested();
         }
     }
 

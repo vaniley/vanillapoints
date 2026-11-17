@@ -23,6 +23,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
@@ -364,6 +365,65 @@ class AsyncSaveServiceTest {
         }
     }
 
+    @Test
+    void failedIdleShutdownCleanupClosesOnceAndDoesNotRetryDirtyData() {
+        RecordingStorage storage = new RecordingStorage();
+        QueuedExecutor executor = new QueuedExecutor();
+        AsyncSaveService service = service(storage, executor);
+        service.requestSave(null);
+        storage.failNext.set(true);
+        assertFalse(service.shutdown(0));
+
+        service.closeStorageWhenIdle();
+        service.closeStorageWhenIdle();
+        executor.runNext();
+        assertFalse(service.flush(0));
+        assertFalse(service.shutdown(0));
+        assertEquals(1, storage.closes.get());
+        assertEquals(1, storage.attempts.get());
+    }
+
+    @Test
+    void timedOutShutdownCleanupClosesOnlyAfterActiveWriterCompletes() throws Exception {
+        RecordingStorage storage = new RecordingStorage();
+        QueuedExecutor executor = new QueuedExecutor();
+        AsyncSaveService service = service(storage, executor);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        storage.beforeSave = blockOnce(entered, release);
+        service.requestSave(null);
+        CompletableFuture<Void> worker = CompletableFuture.runAsync(executor::runNext);
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertFalse(service.shutdown(0));
+            service.closeStorageWhenIdle();
+            service.closeStorageWhenIdle();
+            assertEquals(0, storage.closes.get());
+            assertFalse(service.flush(0));
+        } finally {
+            release.countDown();
+        }
+        worker.get(5, TimeUnit.SECONDS);
+
+        service.closeStorageWhenIdle();
+        assertEquals(1, storage.closes.get());
+        assertEquals(1, storage.attempts.get());
+        assertEquals(0, storage.activeWritersAtClose.get());
+    }
+
+    @Test
+    void cleanupRequiresRetirementAndHandlesCloseFailureIdempotently() {
+        RecordingStorage storage = new RecordingStorage();
+        AsyncSaveService service = service(storage, new QueuedExecutor());
+        assertThrows(IllegalStateException.class, service::closeStorageWhenIdle);
+        assertTrue(service.retireIfClean());
+        storage.failClose.set(true);
+
+        service.closeStorageWhenIdle();
+        service.closeStorageWhenIdle();
+        assertEquals(1, storage.closes.get());
+    }
+
     private static AsyncSaveService service(RecordingStorage storage, Executor executor) {
         return new AsyncSaveService(storage, logger(), executor, player -> { });
     }
@@ -415,6 +475,9 @@ class AsyncSaveServiceTest {
         private final AtomicInteger activeWriters = new AtomicInteger();
         private final AtomicInteger maximumWriters = new AtomicInteger();
         private final AtomicBoolean failNext = new AtomicBoolean();
+        private final AtomicInteger closes = new AtomicInteger();
+        private final AtomicInteger activeWritersAtClose = new AtomicInteger();
+        private final AtomicBoolean failClose = new AtomicBoolean();
         private volatile Consumer<PointStorageSnapshot> beforeSave = snapshot -> { };
 
         @Override
@@ -440,6 +503,15 @@ class AsyncSaveServiceTest {
                 saved.add(snapshot);
             } finally {
                 activeWriters.decrementAndGet();
+            }
+        }
+
+        @Override
+        public void close() {
+            closes.incrementAndGet();
+            activeWritersAtClose.set(activeWriters.get());
+            if (failClose.get()) {
+                throw new StorageException("test close failure");
             }
         }
     }

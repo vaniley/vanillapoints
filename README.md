@@ -244,3 +244,5 @@ The compiler uses `--release 21`. Paper API `1.21.11-R0.1-20260511.115010-91` is
 - On Folia, concurrent players in separate regions saving/deleting homes and warps while another player runs `/vp reload`; verify no scheduler/region ownership errors or lost saves after a clean restart.
 - Enable biome info cards and query points in the caller's region, a different region and an unloaded chunk. The last two must show unknown without forcing a chunk load.
 - Confirm all lookup commands still only display/copy coordinates and never teleport a player.
+
+Reload preparation runs off-thread. Commands report an operation in progress during reload; tab completion, placeholders, and API reads return empty results without blocking regions. API mutations return false during reload. Retry after the reload completes. Failed preparation keeps the old services active.

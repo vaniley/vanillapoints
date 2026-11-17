@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -26,11 +27,17 @@ class VanillaPointsApiProviderTest {
     private final VanillaPoints plugin = mock(VanillaPoints.class);
     private final AtomicReference<PointService> active = new AtomicReference<>();
     private final AtomicInteger stateLockDepth = new AtomicInteger();
+    private final AtomicBoolean maintenance = new AtomicBoolean();
+    private final AtomicBoolean fallbackDelegated = new AtomicBoolean();
 
     private VanillaPointsApiProvider provider(PointService initial) {
         active.set(initial);
         when(plugin.isEnabled()).thenReturn(true);
-        when(plugin.withState(any())).thenAnswer(invocation -> {
+        when(plugin.tryWithState(any(), any())).thenAnswer(invocation -> {
+            if (maintenance.get()) {
+                fallbackDelegated.set(true);
+                return invocation.getArgument(1);
+            }
             stateLockDepth.incrementAndGet();
             try {
                 return ((Supplier<?>) invocation.getArgument(0)).get();
@@ -103,6 +110,34 @@ class VanillaPointsApiProviderTest {
         assertTrue(api.listWarps().isEmpty());
         assertFalse(api.deleteWarp("warp"));
         verifyNoInteractions(old);
+    }
+
+    @Test
+    void maintenanceReturnsFallbacksWithoutResolvingOrMutatingTheService() {
+        PointService points = mock(PointService.class);
+        VanillaPointsApiProvider api = provider(points);
+        UUID owner = UUID.randomUUID();
+        maintenance.set(true);
+
+        assertTrue(api.getSpawnInfo().isEmpty());
+        assertTrue(api.getHomeInfo(owner, "home").isEmpty());
+        assertTrue(api.getWarpInfo("warp").isEmpty());
+        assertTrue(api.listHomes(owner).isEmpty());
+        assertTrue(api.listWarps().isEmpty());
+        assertFalse(api.setSpawn(mock(Location.class)));
+        assertFalse(api.deleteHome(owner, "home"));
+        assertFalse(api.deleteWarp("warp"));
+        assertFalse(api.deleteSpawn(null));
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::isPrimaryThread).thenReturn(true);
+            assertTrue(api.getSpawn().isEmpty());
+            assertTrue(api.getHome(owner).isEmpty());
+            assertTrue(api.getWarp("warp").isEmpty());
+        }
+        verify(plugin, never()).currentPoints();
+        verify(plugin, atLeastOnce()).tryWithState(any(), any());
+        assertTrue(fallbackDelegated.get(), "provider must delegate the supplied maintenance fallback");
+        verifyNoInteractions(points);
     }
 
     @Test

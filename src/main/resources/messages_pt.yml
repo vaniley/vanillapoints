@@ -96,3 +96,4 @@ admin-import-usage: '&cUso: /vp import essentials'
 admin-import-done: '&aImportação concluída: &f{homes} &acasas e &f{warps} &aurdiduras importadas.'
 
 admin-player-unknown: '&cJogador desconhecido: {player}. Use um nome em cache ou um UUID.'
+operation-in-progress: '&eUma operação está em andamento. Tente novamente em instantes.'
