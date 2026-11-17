@@ -391,10 +391,12 @@ class AsyncSaveServiceTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         storage.beforeSave = blockOnce(entered, release);
+        storage.setSpawn(point(1));
         service.requestSave(null);
         CompletableFuture<Void> worker = CompletableFuture.runAsync(executor::runNext);
         try {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
+            storage.setSpawn(point(2));
             assertFalse(service.shutdown(0));
             service.closeStorageWhenIdle();
             service.closeStorageWhenIdle();
@@ -407,7 +409,34 @@ class AsyncSaveServiceTest {
 
         service.closeStorageWhenIdle();
         assertEquals(1, storage.closes.get());
+        assertEquals(2, storage.attempts.get());
+        assertEquals(List.of(point(1), point(2)), storage.saved.stream().map(PointStorageSnapshot::spawn).toList());
+        assertEquals(0, storage.activeWritersAtClose.get());
+    }
+
+    @Test
+    void failedRetiredWriterClosesWithoutRetryingPendingShutdownRevision() throws Exception {
+        RecordingStorage storage = new RecordingStorage();
+        QueuedExecutor executor = new QueuedExecutor();
+        AsyncSaveService service = service(storage, executor);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        storage.beforeSave = blockOnce(entered, release);
+        storage.failNext.set(true);
+        service.requestSave(null);
+        CompletableFuture<Void> worker = CompletableFuture.runAsync(executor::runNext);
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertFalse(service.shutdown(0));
+            service.closeStorageWhenIdle();
+        } finally {
+            release.countDown();
+        }
+        worker.get(5, TimeUnit.SECONDS);
+
         assertEquals(1, storage.attempts.get());
+        assertTrue(storage.saved.isEmpty());
+        assertEquals(1, storage.closes.get());
         assertEquals(0, storage.activeWritersAtClose.get());
     }
 

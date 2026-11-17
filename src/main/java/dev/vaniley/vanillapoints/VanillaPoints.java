@@ -119,6 +119,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public void onEnable() {
+        reloadQueued.set(false);
+        importQueued.set(false);
         saveDefaultConfig();
         try {
             loadPluginState();
@@ -180,6 +182,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             flushAndCloseStorage();
             pendingWarpDeletions.clear();
         } finally {
+            reloadQueued.set(false);
+            importQueued.set(false);
             stateLock.writeLock().unlock();
         }
     }
@@ -619,35 +623,8 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 try {
                     // Parse files off-thread without holding the live state lock.
                     var imported = EssentialsImporter.readData(this);
-                    getServer().getGlobalRegionScheduler().run(this, mergeTask -> {
-                        if (reloadQueued.get()) {
-                            importQueued.set(false);
-                            sendOnSenderThread(sender, "operation-in-progress");
-                            return;
-                        }
-                        if (!stateLock.writeLock().tryLock()) {
-                            importQueued.set(false);
-                            sendOnSenderThread(sender, "operation-in-progress");
-                            return;
-                        }
-                        try {
-                            if (!isEnabled() || storage == null) {
-                                return;
-                            }
-                            imported.snapshot().homes().forEach((playerId, homes) ->
-                                    homes.forEach((name, point) -> storage.setHome(playerId, name, point)));
-                            imported.snapshot().warps().forEach(storage::setWarp);
-                            if (imported.result().homes() > 0 || imported.result().warps() > 0) {
-                                saveService.requestSave(null);
-                            }
-                        } finally {
-                            stateLock.writeLock().unlock();
-                            importQueued.set(false);
-                        }
-                        sendOnSenderThread(sender, "admin-import-done", Map.of(
-                                "homes", String.valueOf(imported.result().homes()),
-                                "warps", String.valueOf(imported.result().warps())));
-                    });
+                    getServer().getGlobalRegionScheduler().run(this,
+                            mergeTask -> mergeImport(sender, imported, 5));
                 } catch (RuntimeException exception) {
                     importQueued.set(false);
                     getLogger().log(Level.SEVERE, "Could not import Essentials points.", exception);
@@ -659,6 +636,45 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             throw exception;
         }
         return true;
+    }
+
+    private void mergeImport(CommandSender sender, EssentialsImporter.ImportedData imported, int retries) {
+        if (!isEnabled()) {
+            importQueued.set(false);
+            return;
+        }
+        if (reloadQueued.get() || !stateLock.writeLock().tryLock()) {
+            if (retries > 0) {
+                try {
+                    getServer().getGlobalRegionScheduler().runDelayed(this,
+                            task -> mergeImport(sender, imported, retries - 1), 1L);
+                } catch (RuntimeException exception) {
+                    importQueued.set(false);
+                    throw exception;
+                }
+            } else {
+                importQueued.set(false);
+                sendOnSenderThread(sender, "operation-in-progress");
+            }
+            return;
+        }
+        try {
+            if (storage == null) {
+                return;
+            }
+            imported.snapshot().homes().forEach((playerId, homes) ->
+                    homes.forEach((name, point) -> storage.setHome(playerId, name, point)));
+            imported.snapshot().warps().forEach(storage::setWarp);
+            if (imported.result().homes() > 0 || imported.result().warps() > 0) {
+                saveService.requestSave(null);
+            }
+        } finally {
+            stateLock.writeLock().unlock();
+            importQueued.set(false);
+        }
+        sendOnSenderThread(sender, "admin-import-done", Map.of(
+                "homes", String.valueOf(imported.result().homes()),
+                "warps", String.valueOf(imported.result().warps())));
     }
 
     private OfflinePlayer resolveOfflinePlayer(String name) {

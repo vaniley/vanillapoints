@@ -24,6 +24,7 @@ class LifecycleStateTest {
         VanillaPoints plugin = mock(VanillaPoints.class, CALLS_REAL_METHODS);
         set(plugin, "stateLock", new ReentrantReadWriteLock());
         set(plugin, "reloadQueued", new AtomicBoolean());
+        set(plugin, "importQueued", new AtomicBoolean());
         set(plugin, "pendingWarpDeletions", new ConcurrentHashMap<>());
         doReturn(Logger.getAnonymousLogger()).when(plugin).getLogger();
         return plugin;
@@ -147,12 +148,72 @@ class LifecycleStateTest {
         set(plugin, "saveService", save);
         set(plugin, "storage", storage);
         set(plugin, "points", mock(PointService.class));
+        field(plugin, "reloadQueued", AtomicBoolean.class).set(true);
+        field(plugin, "importQueued", AtomicBoolean.class).set(true);
         plugin.onDisable();
+        assertFalse(field(plugin, "reloadQueued", AtomicBoolean.class).get());
+        assertFalse(field(plugin, "importQueued", AtomicBoolean.class).get());
         verify(save).shutdown(10_000L);
         verify(save).closeStorageWhenIdle();
         verify(storage, never()).close();
         assertNull(plugin.currentPoints());
         assertNull(field(plugin, "storage", PointStorage.class));
+    }
+
+    @Test
+    void importMergeUpdatesLiveStorageAndRequestsSave() throws Exception {
+        VanillaPoints plugin = plugin();
+        PointStorage storage = mock(PointStorage.class);
+        AsyncSaveService save = mock(AsyncSaveService.class);
+        MessageService messages = mock(MessageService.class);
+        var sender = mock(org.bukkit.command.CommandSender.class);
+        doReturn(true).when(plugin).isEnabled();
+        set(plugin, "storage", storage);
+        set(plugin, "saveService", save);
+        set(plugin, "messages", messages);
+        when(messages.component(eq(sender), eq("admin-import-done"), anyMap()))
+                .thenReturn(net.kyori.adventure.text.Component.text("imported"));
+        var playerId = java.util.UUID.randomUUID();
+        StoredPoint point = StoredPoint.of("world", 1, 64, 2, 0, 0, "", "", "", true, "Essentials", 0);
+        var snapshot = new PointStorageSnapshot(java.util.Map.of(),
+                java.util.Map.of(playerId, java.util.Map.of("home", point)), java.util.Map.of("market", point));
+        var imported = new EssentialsImporter.ImportedData(snapshot, new EssentialsImporter.Result(1, 1));
+        field(plugin, "importQueued", AtomicBoolean.class).set(true);
+        mergeImport(plugin, sender, imported, 5);
+        verify(storage).setHome(playerId, "home", point);
+        verify(storage).setWarp("market", point);
+        verify(save).requestSave(null);
+        assertFalse(field(plugin, "importQueued", AtomicBoolean.class).get());
+    }
+
+    @Test
+    void contendedImportRetriesWithoutReparsingOrBlockingRegion() throws Exception {
+        VanillaPoints plugin = plugin();
+        Server server = mock(Server.class);
+        var scheduler = mock(io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler.class);
+        when(server.getGlobalRegionScheduler()).thenReturn(scheduler);
+        doReturn(server).when(plugin).getServer();
+        doReturn(true).when(plugin).isEnabled();
+        var sender = mock(org.bukkit.command.CommandSender.class);
+        var imported = new EssentialsImporter.ImportedData(PointStorageSnapshot.empty(), new EssentialsImporter.Result(0, 0));
+        field(plugin, "importQueued", AtomicBoolean.class).set(true);
+        ReentrantReadWriteLock lock = field(plugin, "stateLock", ReentrantReadWriteLock.class);
+        lock.readLock().lock();
+        try {
+            mergeImport(plugin, sender, imported, 5);
+            verify(scheduler).runDelayed(eq(plugin), any(), eq(1L));
+            assertTrue(field(plugin, "importQueued", AtomicBoolean.class).get());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    private void mergeImport(VanillaPoints plugin, org.bukkit.command.CommandSender sender,
+                             EssentialsImporter.ImportedData data, int retries) throws Exception {
+        var method = VanillaPoints.class.getDeclaredMethod("mergeImport", org.bukkit.command.CommandSender.class,
+                EssentialsImporter.ImportedData.class, int.class);
+        method.setAccessible(true);
+        method.invoke(plugin, sender, data, retries);
     }
 
     private void prepareReload(VanillaPoints plugin) throws Exception {

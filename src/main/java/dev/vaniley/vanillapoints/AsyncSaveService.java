@@ -117,7 +117,7 @@ final class AsyncSaveService {
         }
     }
 
-    /** Abandons further saves and closes retired storage once any active writer has exited. */
+    /** Closes retired storage after any active writer drains pending revisions or fails. */
     void closeStorageWhenIdle() {
         synchronized (monitor) {
             if (!retired) {
@@ -202,9 +202,6 @@ final class AsyncSaveService {
                 long revision;
                 Player notifyPlayer;
                 synchronized (monitor) {
-                    if (closeRequested) {
-                        return false;
-                    }
                     if (savedRevision == requestedRevision) {
                         latestNotifyPlayer = null;
                         // Release atomically with the clean check, so a new request cannot be stranded.
