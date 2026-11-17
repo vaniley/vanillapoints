@@ -13,7 +13,7 @@ import java.util.logging.Level;
 /**
  * Lightweight, optional update checker. It fetches a plain-text "latest version" string from a configurable
  * endpoint (SpigotMC legacy API by resource id, or any custom URL) and compares it to the running version.
- * Networking happens off the main thread; notifications are scheduled back onto it.
+ * Networking uses the async scheduler; join notifications run on the player region.
  */
 final class UpdateChecker {
     private static final String SPIGOT_API = "https://api.spigotmc.org/legacy/update.php?resource=";
@@ -37,7 +37,7 @@ final class UpdateChecker {
             return;
         }
 
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        Bukkit.getAsyncScheduler().runNow(plugin, task -> {
             String remote = fetch(url);
             if (remote == null || remote.isBlank()) {
                 return;
@@ -51,8 +51,8 @@ final class UpdateChecker {
 
             updateAvailable = true;
             if (plugin.isEnabled()) {
-                Bukkit.getScheduler().runTask(plugin, () -> plugin.getLogger().info(
-                        "A new VanillaPoints version is available: " + latestVersion + " (running " + current + ")."));
+                plugin.getLogger().info(
+                        "A new VanillaPoints version is available: " + latestVersion + " (running " + current + ").");
             }
         });
     }
@@ -94,7 +94,16 @@ final class UpdateChecker {
                 return null;
             }
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-                return reader.readLine();
+                // Bound untrusted endpoint data instead of allocating an arbitrary response line.
+                StringBuilder version = new StringBuilder();
+                for (int i = 0; i < 128; i++) {
+                    int character = reader.read();
+                    if (character == -1 || character == '\n' || character == '\r') {
+                        return version.toString();
+                    }
+                    version.append((char) character);
+                }
+                return null;
             }
         } catch (Exception exception) {
             plugin.getLogger().log(Level.FINE, "Update check failed: " + exception.getMessage());

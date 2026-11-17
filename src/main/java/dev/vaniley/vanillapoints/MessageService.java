@@ -23,7 +23,9 @@ final class MessageService {
 
     private final JavaPlugin plugin;
     private final LegacyComponentSerializer legacySerializer = LegacyComponentSerializer.legacyAmpersand();
-    private final Map<String, FileConfiguration> loadedMessages = new HashMap<>();
+    private Map<String, FileConfiguration> loadedMessages = Map.of();
+    private boolean perPlayerPermissions;
+    private List<String> selectionOrder = SUPPORTED_LANGUAGES;
     private FileConfiguration defaultMessages;
     private String globalLanguage = DEFAULT_LANGUAGE;
 
@@ -32,7 +34,6 @@ final class MessageService {
     }
 
     void load() {
-        loadedMessages.clear();
         defaultMessages = loadBundledDefaults();
 
         String configuredLanguage = normalizeLanguage(plugin.getConfig().getString("settings.language", DEFAULT_LANGUAGE));
@@ -41,7 +42,19 @@ final class MessageService {
             configuredLanguage = DEFAULT_LANGUAGE;
         }
         globalLanguage = configuredLanguage;
-        loadLanguage(globalLanguage);
+        perPlayerPermissions = plugin.getConfig().getBoolean("settings.per-player-permissions", false);
+        Map<String, FileConfiguration> languages = new HashMap<>();
+        languages.put(globalLanguage, loadLanguageFile(globalLanguage));
+        if (perPlayerPermissions) {
+            for (String language : SUPPORTED_LANGUAGES) {
+                if (!languages.containsKey(language)) {
+                    languages.put(language, loadLanguageFile(language));
+                }
+            }
+        }
+        loadedMessages = Map.copyOf(languages);
+        selectionOrder = java.util.stream.Stream.concat(java.util.stream.Stream.of(globalLanguage),
+                SUPPORTED_LANGUAGES.stream().filter(language -> !language.equals(globalLanguage))).toList();
     }
 
     private boolean hasBundledResource(String fileName) {
@@ -81,7 +94,7 @@ final class MessageService {
 
     private FileConfiguration loadLanguage(String language) {
         String normalizedLanguage = normalizeLanguage(language);
-        return loadedMessages.computeIfAbsent(normalizedLanguage, this::loadLanguageFile);
+        return loadedMessages.getOrDefault(normalizedLanguage, defaultMessages);
     }
 
     private FileConfiguration loadLanguageFile(String language) {
@@ -97,34 +110,16 @@ final class MessageService {
     }
 
     private String languageFor(CommandSender sender) {
-        if (!(sender instanceof Player player) || !plugin.getConfig().getBoolean("settings.per-player-permissions", false)) {
+        if (!(sender instanceof Player player) || !perPlayerPermissions) {
             return globalLanguage;
         }
 
-        for (String language : languageSelectionOrder()) {
+        for (String language : selectionOrder) {
             if (player.hasPermission("vanillapoints.lang." + language)) {
                 return language;
             }
         }
         return globalLanguage;
-    }
-
-    private List<String> languageSelectionOrder() {
-        if (DEFAULT_LANGUAGE.equals(globalLanguage)) {
-            return SUPPORTED_LANGUAGES;
-        }
-
-        return SUPPORTED_LANGUAGES.stream()
-                .sorted((first, second) -> {
-                    if (first.equals(globalLanguage)) {
-                        return -1;
-                    }
-                    if (second.equals(globalLanguage)) {
-                        return 1;
-                    }
-                    return 0;
-                })
-                .toList();
     }
 
     private String normalizeLanguage(String language) {

@@ -4,5 +4,6 @@ enum PointMutationResult {
     SUCCESS,
     CANCELLED,
     NOT_FOUND,
+    LIMIT_REACHED,
     INVALID
 }

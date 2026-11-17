@@ -1,13 +1,14 @@
 name: VanillaPoints
 version: ${project.version}
 main: dev.vaniley.vanillapoints.VanillaPoints
-api-version: '26.2'
+api-version: '1.21.11'
+folia-supported: true
 author: Lazarrew
 softdepend: [PlaceholderAPI]
 libraries:
-  - org.xerial:sqlite-jdbc:3.49.1.0
-  - com.mysql:mysql-connector-j:9.2.0
-  - com.zaxxer:HikariCP:6.2.1
+  - org.xerial:sqlite-jdbc:${sqlite.version}
+  - com.mysql:mysql-connector-j:${mysql.version}
+  - com.zaxxer:HikariCP:${hikari.version}
 
 commands:
   setspawn:

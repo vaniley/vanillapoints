@@ -21,6 +21,16 @@ final class EssentialsImporter {
         this.storage = storage;
     }
 
+    /**
+     * Reads Essentials files into detached, immutable point data without accessing live storage
+     * or Bukkit worlds. May run on an async worker; merging the result is the caller's responsibility.
+     */
+    static ImportedData readData(JavaPlugin plugin) {
+        ImportStorage collected = new ImportStorage();
+        Result result = new EssentialsImporter(plugin, collected).importData();
+        return new ImportedData(collected.snapshot(), result);
+    }
+
     Result importData() {
         File essentials = new File(plugin.getDataFolder().getParentFile(), "Essentials");
         if (!essentials.isDirectory()) {
@@ -142,5 +152,18 @@ final class EssentialsImporter {
     }
 
     record Result(int homes, int warps) {
+    }
+
+    record ImportedData(PointStorageSnapshot snapshot, Result result) {
+    }
+
+    private static final class ImportStorage extends AbstractPointStorage {
+        @Override
+        public void load() {
+        }
+
+        @Override
+        public void save(PointStorageSnapshot snapshot) {
+        }
     }
 }

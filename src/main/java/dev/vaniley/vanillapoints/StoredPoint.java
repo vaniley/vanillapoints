@@ -83,7 +83,9 @@ final class StoredPoint {
     }
 
     static StoredPoint fromLocation(Location location, boolean normalizeToBlock) {
-        Location point = normalizeToBlock ? location.getBlock().getLocation() : location;
+        Location point = normalizeToBlock
+                ? new Location(location.getWorld(), location.getBlockX(), location.getBlockY(), location.getBlockZ())
+                : location;
         World world = point.getWorld();
         if (world == null) {
             throw new IllegalArgumentException("Cannot store a location without a world");

@@ -16,6 +16,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 final class PointService {
     private final JavaPlugin plugin;
@@ -23,6 +24,8 @@ final class PointService {
     private final AsyncSaveService saveService;
     private final boolean normalizeToBlock;
     private final boolean saveImmediately;
+    private final Object mutationLock = new Object();
+    private boolean mutationInProgress;
 
     PointService(JavaPlugin plugin, PointStorage storage, AsyncSaveService saveService, boolean normalizeToBlock, boolean saveImmediately) {
         this.plugin = plugin;
@@ -65,34 +68,34 @@ final class PointService {
     }
 
     PointMutationResult setSpawn(CommandSender actor, String worldName, Location location) {
-        if (!ensureMainThread("setSpawn")) {
+        if (!ensureServerThread("setSpawn")) {
+            return PointMutationResult.INVALID;
+        }
+        if (!validLocation(location)) {
             return PointMutationResult.INVALID;
         }
 
-        StoredPoint point = StoredPoint.fromLocation(location, normalizeToBlock);
-        StoredPoint old = storage.spawn(worldName).orElse(null);
-        SpawnSetEvent event = new SpawnSetEvent(actorId(actor), actorName(actor), old == null ? null : PointInfoMapper.toInfo(old), PointInfoMapper.toInfo(point));
-        Bukkit.getPluginManager().callEvent(event);
-        if (event.isCancelled()) {
-            return PointMutationResult.CANCELLED;
-        }
+        return mutate(actor, () -> {
+            StoredPoint point = StoredPoint.fromLocation(location, normalizeToBlock);
+            StoredPoint old = storage.spawn(worldName).orElse(null);
+            SpawnSetEvent event = new SpawnSetEvent(actorId(actor), actorName(actor), old == null ? null : PointInfoMapper.toInfo(old), PointInfoMapper.toInfo(point));
+            Bukkit.getPluginManager().callEvent(event);
+            if (event.isCancelled()) {
+                return PointMutationResult.CANCELLED;
+            }
 
-        storage.setSpawn(worldName, point);
-        requestSave(actor);
-        return PointMutationResult.SUCCESS;
+            storage.setSpawn(worldName, point);
+            return PointMutationResult.SUCCESS;
+        });
     }
 
     PointMutationResult deleteSpawn(CommandSender actor, String worldName) {
-        if (!ensureMainThread("deleteSpawn")) {
+        if (!ensureServerThread("deleteSpawn")) {
             return PointMutationResult.INVALID;
         }
-        if (storage.spawn(worldName).isEmpty()) {
-            return PointMutationResult.NOT_FOUND;
-        }
 
-        storage.deleteSpawn(worldName);
-        requestSave(actor);
-        return PointMutationResult.SUCCESS;
+        return mutate(actor, () -> storage.deleteSpawn(worldName)
+                ? PointMutationResult.SUCCESS : PointMutationResult.NOT_FOUND);
     }
 
     PointMutationResult setHome(CommandSender actor, UUID playerId, Location location) {
@@ -100,95 +103,152 @@ final class PointService {
     }
 
     PointMutationResult setHome(CommandSender actor, UUID playerId, String name, Location location, PointMetadata metadata) {
-        if (!ensureMainThread("setHome")) {
+        return setHome(actor, playerId, name, location, metadata, Integer.MAX_VALUE);
+    }
+
+    PointMutationResult setHome(CommandSender actor, UUID playerId, String name, Location location, PointMetadata metadata, int maxHomes) {
+        if (!ensureServerThread("setHome")) {
             return PointMutationResult.INVALID;
         }
-        if (!PointStorage.isValidHomeName(name)) {
+        if (!validLocation(location)) {
             return PointMutationResult.INVALID;
         }
 
-        String normalizedName = PointStorage.normalizeHomeName(name);
-        StoredPoint point = PointInfoMapper.applyMetadata(StoredPoint.fromLocation(location, normalizeToBlock), metadata);
-        HomeSetEvent event = new HomeSetEvent(actorId(actor), actorName(actor), playerId, storage.home(playerId, normalizedName).map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
-        Bukkit.getPluginManager().callEvent(event);
-        if (event.isCancelled()) {
-            return PointMutationResult.CANCELLED;
-        }
+        return mutate(actor, () -> {
+            if (playerId == null || !PointStorage.isValidHomeName(name)) {
+                return PointMutationResult.INVALID;
+            }
 
-        storage.setHome(playerId, normalizedName, point);
-        requestSave(actor);
-        return PointMutationResult.SUCCESS;
+            String normalizedName = PointStorage.normalizeHomeName(name);
+            Optional<StoredPoint> existing = storage.home(playerId, normalizedName);
+            if (maxHomes != Integer.MAX_VALUE
+                    && existing.isEmpty()
+                    && storage.homes(playerId).size() >= maxHomes) {
+                return PointMutationResult.LIMIT_REACHED;
+            }
+            StoredPoint point = PointInfoMapper.applyMetadata(StoredPoint.fromLocation(location, normalizeToBlock), metadata);
+            HomeSetEvent event = new HomeSetEvent(actorId(actor), actorName(actor), playerId, existing.map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
+            Bukkit.getPluginManager().callEvent(event);
+            if (event.isCancelled()) {
+                return PointMutationResult.CANCELLED;
+            }
+
+            storage.setHome(playerId, normalizedName, point);
+            return PointMutationResult.SUCCESS;
+        });
     }
 
     PointMutationResult deleteHome(CommandSender actor, UUID playerId, String name) {
-        if (!ensureMainThread("deleteHome")) {
-            return PointMutationResult.INVALID;
-        }
-        if (!PointStorage.isValidHomeName(name)) {
+        if (!ensureServerThread("deleteHome")) {
             return PointMutationResult.INVALID;
         }
 
-        String normalizedName = PointStorage.normalizeHomeName(name);
-        Optional<StoredPoint> existing = storage.home(playerId, normalizedName);
-        if (existing.isEmpty()) {
-            return PointMutationResult.NOT_FOUND;
-        }
+        return mutate(actor, () -> {
+            if (playerId == null || !PointStorage.isValidHomeName(name)) {
+                return PointMutationResult.INVALID;
+            }
 
-        HomeDeletedEvent event = new HomeDeletedEvent(actorId(actor), actorName(actor), playerId, PointInfoMapper.toInfo(existing.get()));
-        Bukkit.getPluginManager().callEvent(event);
-        if (event.isCancelled()) {
-            return PointMutationResult.CANCELLED;
-        }
+            String normalizedName = PointStorage.normalizeHomeName(name);
+            Optional<StoredPoint> existing = storage.home(playerId, normalizedName);
+            if (existing.isEmpty()) {
+                return PointMutationResult.NOT_FOUND;
+            }
 
-        storage.deleteHome(playerId, normalizedName);
-        requestSave(actor);
-        return PointMutationResult.SUCCESS;
+            HomeDeletedEvent event = new HomeDeletedEvent(actorId(actor), actorName(actor), playerId, PointInfoMapper.toInfo(existing.get()));
+            Bukkit.getPluginManager().callEvent(event);
+            if (event.isCancelled()) {
+                return PointMutationResult.CANCELLED;
+            }
+
+            storage.deleteHome(playerId, normalizedName);
+            return PointMutationResult.SUCCESS;
+        });
     }
 
     PointMutationResult setWarp(CommandSender actor, String name, Location location, PointMetadata metadata) {
-        if (!ensureMainThread("setWarp")) {
+        if (!ensureServerThread("setWarp")) {
             return PointMutationResult.INVALID;
         }
-        if (!PointStorage.isValidWarpName(name)) {
+        if (!validLocation(location)) {
             return PointMutationResult.INVALID;
         }
 
-        String normalizedName = PointStorage.normalizeWarpName(name);
-        StoredPoint point = PointInfoMapper.applyMetadata(StoredPoint.fromLocation(location, normalizeToBlock), metadata);
-        WarpSetEvent event = new WarpSetEvent(actorId(actor), actorName(actor), normalizedName, storage.warp(normalizedName).map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
-        Bukkit.getPluginManager().callEvent(event);
-        if (event.isCancelled()) {
-            return PointMutationResult.CANCELLED;
-        }
+        return mutate(actor, () -> {
+            if (!PointStorage.isValidWarpName(name)) {
+                return PointMutationResult.INVALID;
+            }
 
-        storage.setWarp(normalizedName, point);
-        requestSave(actor);
-        return PointMutationResult.SUCCESS;
+            String normalizedName = PointStorage.normalizeWarpName(name);
+            StoredPoint point = PointInfoMapper.applyMetadata(StoredPoint.fromLocation(location, normalizeToBlock), metadata);
+            WarpSetEvent event = new WarpSetEvent(actorId(actor), actorName(actor), normalizedName, storage.warp(normalizedName).map(PointInfoMapper::toInfo).orElse(null), PointInfoMapper.toInfo(point));
+            Bukkit.getPluginManager().callEvent(event);
+            if (event.isCancelled()) {
+                return PointMutationResult.CANCELLED;
+            }
+
+            storage.setWarp(normalizedName, point);
+            return PointMutationResult.SUCCESS;
+        });
     }
 
     PointMutationResult deleteWarp(CommandSender actor, String name) {
-        if (!ensureMainThread("deleteWarp")) {
-            return PointMutationResult.INVALID;
-        }
-        if (!PointStorage.isValidWarpName(name)) {
+        if (!ensureServerThread("deleteWarp")) {
             return PointMutationResult.INVALID;
         }
 
-        String normalizedName = PointStorage.normalizeWarpName(name);
-        Optional<StoredPoint> existing = storage.warp(normalizedName);
-        if (existing.isEmpty()) {
-            return PointMutationResult.NOT_FOUND;
-        }
+        return mutate(actor, () -> {
+            if (!PointStorage.isValidWarpName(name)) {
+                return PointMutationResult.INVALID;
+            }
 
-        WarpDeletedEvent event = new WarpDeletedEvent(actorId(actor), actorName(actor), normalizedName, PointInfoMapper.toInfo(existing.get()));
-        Bukkit.getPluginManager().callEvent(event);
-        if (event.isCancelled()) {
-            return PointMutationResult.CANCELLED;
-        }
+            String normalizedName = PointStorage.normalizeWarpName(name);
+            Optional<StoredPoint> existing = storage.warp(normalizedName);
+            if (existing.isEmpty()) {
+                return PointMutationResult.NOT_FOUND;
+            }
 
-        storage.deleteWarp(normalizedName);
-        requestSave(actor);
-        return PointMutationResult.SUCCESS;
+            WarpDeletedEvent event = new WarpDeletedEvent(actorId(actor), actorName(actor), normalizedName, PointInfoMapper.toInfo(existing.get()));
+            Bukkit.getPluginManager().callEvent(event);
+            if (event.isCancelled()) {
+                return PointMutationResult.CANCELLED;
+            }
+
+            storage.deleteWarp(normalizedName);
+            return PointMutationResult.SUCCESS;
+        });
+    }
+
+    /** Serializes only plugin-owned data; never schedules or waits for another region. */
+    private PointMutationResult mutate(CommandSender actor, Supplier<PointMutationResult> operation) {
+        synchronized (mutationLock) {
+            // A listener can read points, but a nested write would invalidate the outer event's old value.
+            if (mutationInProgress) {
+                return PointMutationResult.INVALID;
+            }
+            mutationInProgress = true;
+            try {
+                PointMutationResult result = operation.get();
+                if (result == PointMutationResult.SUCCESS) {
+                    requestSave(actor);
+                }
+                return result;
+            } finally {
+                mutationInProgress = false;
+            }
+        }
+    }
+
+    private boolean validLocation(Location location) {
+        try {
+            // Location keeps a weak world reference and throws if that world was unloaded.
+            if (location == null || location.getWorld() == null) {
+                return false;
+            }
+            location.checkFinite();
+            return true;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     private void requestSave(CommandSender actor) {
@@ -198,12 +258,14 @@ final class PointService {
         saveService.requestSave(actor instanceof Player player ? player : null);
     }
 
-    private boolean ensureMainThread(String operation) {
+    private boolean ensureServerThread(String operation) {
+        // Paper/Folia delegate this to TickThread.isTickThread(): region AND global tick threads
+        // are accepted. It does not imply ownership of any entity/chunk; we only store coordinates.
         if (Bukkit.isPrimaryThread()) {
             return true;
         }
 
-        plugin.getLogger().warning("VanillaPoints API mutation '" + operation + "' was called off the main thread and was rejected.");
+        plugin.getLogger().warning("VanillaPoints API mutation '" + operation + "' requires a server tick thread (Paper main, Folia region or global) and was rejected.");
         return false;
     }
 

@@ -24,7 +24,7 @@ final class YamlPointStorage extends AbstractPointStorage {
     }
 
     @Override
-    public void load() throws StorageException {
+    public synchronized void load() throws StorageException {
         dataFile = new File(plugin.getDataFolder(), "data.yml");
         if (!dataFile.exists()) {
             plugin.saveResource("data.yml", false);
@@ -35,7 +35,7 @@ final class YamlPointStorage extends AbstractPointStorage {
     }
 
     @Override
-    public void save(PointStorageSnapshot snapshot) throws StorageException {
+    public synchronized void save(PointStorageSnapshot snapshot) throws StorageException {
         ensureDataFile();
 
         YamlConfiguration data = new YamlConfiguration();
