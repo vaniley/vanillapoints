@@ -24,6 +24,15 @@ final class FeedbackService {
             if (config.getBoolean("feedback.sounds", true) && soundName != null && !soundName.isBlank()) {
                 NamespacedKey key = soundKey(soundName);
                 sound = key == null ? null : Registry.SOUNDS.get(key);
+                if (sound == null && !soundName.contains(":")) {
+                    // Flattening underscores loses word boundaries (power_select, note_block).
+                    for (Sound candidate : Registry.SOUNDS) {
+                        if (matchesLegacySound(soundName, candidate.getKey())) {
+                            sound = candidate;
+                            break;
+                        }
+                    }
+                }
                 if (sound == null) {
                     plugin.getLogger().warning("Invalid feedback sound '" + soundName + "' at " + path + ".sound");
                 }
@@ -73,6 +82,11 @@ final class FeedbackService {
             normalized = normalized.replace('_', '.');
         }
         return NamespacedKey.fromString(normalized);
+    }
+
+    static boolean matchesLegacySound(String name, NamespacedKey key) {
+        return key.getNamespace().equals(NamespacedKey.MINECRAFT)
+                && key.getKey().replace('.', '_').equalsIgnoreCase(name.trim());
     }
 
     static float bounded(double value, double minimum, double maximum, double fallback) {

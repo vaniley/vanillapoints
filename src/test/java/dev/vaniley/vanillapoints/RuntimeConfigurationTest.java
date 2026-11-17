@@ -20,6 +20,18 @@ class RuntimeConfigurationTest {
     }
 
     @Test
+    void legacySoundAliasesPreserveMultiwordRegistryNames() {
+        assertTrue(FeedbackService.matchesLegacySound("BLOCK_BEACON_POWER_SELECT",
+                org.bukkit.NamespacedKey.minecraft("block.beacon.power_select")));
+        assertTrue(FeedbackService.matchesLegacySound(" block_note_block_harp ",
+                org.bukkit.NamespacedKey.minecraft("block.note_block.harp")));
+        assertFalse(FeedbackService.matchesLegacySound("BLOCK_BEACON_POWER_SELECT",
+                org.bukkit.NamespacedKey.minecraft("block.beacon.activate")));
+        assertFalse(FeedbackService.matchesLegacySound("BLOCK_BEACON_POWER_SELECT",
+                org.bukkit.NamespacedKey.fromString("custom:block.beacon.power_select")));
+    }
+
+    @Test
     void boundsFeedbackAndRejectsNonFiniteValues() {
         assertEquals(256f, FeedbackService.bounded(1000, 0, 256, 8));
         assertEquals(0f, FeedbackService.bounded(-10, 0, 256, 8));

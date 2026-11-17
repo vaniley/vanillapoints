@@ -21,9 +21,11 @@ VanillaPoints remains a lightweight coordinates-only homes, spawn and warps plug
 - API providers resolve the current point service per operation, including after reload. Mutations remain synchronous server-tick operations with cancellable events; arbitrary async callers are not supported.
 - Optional biome info is read only if the chunk is loaded and the caller owns the region. Other cases show unknown rather than loading chunks or reaching across regions.
 - Existing message files, copy formats, permission limits, optional info-card rows and YAML/SQLite/MySQL backends remain configurable.
-- Feedback accepts namespaced sound keys as well as Bukkit-style names, caches settings and bounds effect parameters. Admin player lookups use cached names/UUIDs rather than a blocking Mojang request, with localized unknown-player output.
+- Feedback accepts namespaced sound keys as well as Bukkit-style names, caches settings and bounds effect parameters. Multiword legacy names such as `BLOCK_BEACON_POWER_SELECT` resolve correctly. Admin player lookups use cached names/UUIDs rather than a blocking Mojang request, with localized unknown-player output.
 - Location-returning API methods, including `PointInfo.toLocation()`, now throw `IllegalStateException` when called from an async worker. Use a Paper main thread or a Folia region/global tick thread; immutable `PointInfo` reads and name snapshots remain available to async callers.
 - API reads return empty snapshots and mutations return `false` while a queued reload or lifecycle maintenance prevents immediate access, as well as after disable. Consumers should retry after the queued reload completes; never wait or busy-loop on a server tick thread.
+
+- All bundled languages include the selected home name in home feedback. The build-helper regression script can run directly.
 
 ## Upstream availability and verification limits
 
