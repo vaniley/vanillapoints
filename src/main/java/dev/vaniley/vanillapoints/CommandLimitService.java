@@ -8,22 +8,38 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class CommandLimitService {
     private static final String DEFAULT_BYPASS_PERMISSION = "vanillapoints.bypass.cooldown";
 
     private final VanillaPoints plugin;
     private final MessageService messages;
-    private final Map<UUID, Map<String, Long>> cooldowns = new HashMap<>();
-    private final Map<UUID, Deque<Long>> commandWindows = new HashMap<>();
+    private final Map<UUID, Map<String, Long>> cooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, Deque<Long>> commandWindows = new ConcurrentHashMap<>();
+
+    private final String bypassPermission;
+    private final long windowMillis;
+    private final int maxCommands;
+    private final long defaultCooldownMillis;
+    private final Map<String, Long> commandCooldownMillis = new HashMap<>();
 
     CommandLimitService(VanillaPoints plugin, MessageService messages) {
         this.plugin = plugin;
         this.messages = messages;
+        bypassPermission = plugin.getConfig().getString("cooldowns.bypass-permission", DEFAULT_BYPASS_PERMISSION);
+        windowMillis = duration("rate-limit.window", "60s");
+        maxCommands = plugin.getConfig().getInt("rate-limit.max-commands", 30);
+        defaultCooldownMillis = duration("cooldowns.default", "2s");
+        var commands = plugin.getConfig().getConfigurationSection("cooldowns.per-command");
+        if (commands != null) {
+            for (String command : commands.getKeys(false)) {
+                commandCooldownMillis.put(command, duration("cooldowns.per-command." + command, defaultCooldownMillis));
+            }
+        }
     }
 
     boolean check(Player player, String commandName) {
-        String bypassPermission = plugin.getConfig().getString("cooldowns.bypass-permission", DEFAULT_BYPASS_PERMISSION);
         if (bypassPermission != null && !bypassPermission.isBlank() && player.hasPermission(bypassPermission)) {
             return true;
         }
@@ -56,8 +72,6 @@ final class CommandLimitService {
     }
 
     private boolean checkRateLimit(Player player, long now) {
-        long windowMillis = duration("rate-limit.window", "60s");
-        int maxCommands = plugin.getConfig().getInt("rate-limit.max-commands", 30);
         if (windowMillis <= 0L || maxCommands <= 0) {
             return true;
         }
@@ -75,8 +89,6 @@ final class CommandLimitService {
     }
 
     private void recordUsage(UUID playerId, String commandName, long now, long cooldownMillis) {
-        long windowMillis = duration("rate-limit.window", "60s");
-        int maxCommands = plugin.getConfig().getInt("rate-limit.max-commands", 30);
         if (windowMillis > 0L && maxCommands > 0) {
             commandWindows.computeIfAbsent(playerId, ignored -> new ArrayDeque<>()).addLast(now);
         }
@@ -111,8 +123,7 @@ final class CommandLimitService {
     }
 
     private long cooldownMillis(String commandName) {
-        long fallback = duration("cooldowns.default", "2s");
-        return duration("cooldowns.per-command." + commandName, fallback);
+        return commandCooldownMillis.getOrDefault(commandName, defaultCooldownMillis);
     }
 
     private long duration(String path, String fallback) {

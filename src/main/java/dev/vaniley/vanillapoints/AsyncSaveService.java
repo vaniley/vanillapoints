@@ -4,132 +4,225 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 final class AsyncSaveService {
-    private final JavaPlugin plugin;
     private final PointStorage storage;
-    private final MessageService messages;
-    private final AtomicBoolean workerRunning = new AtomicBoolean(false);
+    private final Logger logger;
+    private final Executor executor;
+    private final Consumer<Player> failureNotifier;
     private final Object monitor = new Object();
 
-    private volatile PointStorageSnapshot latestSnapshot;
-    private volatile UUID latestNotifyPlayerId;
+    // All state belongs to monitor. Requests are cheap; only the writer copies the storage.
+    private long requestedRevision;
+    private long savedRevision;
+    private long workerGeneration;
+    private boolean workerScheduled;
+    private boolean writerRunning;
+    private boolean retired;
+    private Player latestNotifyPlayer;
 
     AsyncSaveService(JavaPlugin plugin, PointStorage storage, MessageService messages) {
-        this.plugin = plugin;
+        this(storage, plugin.getLogger(),
+                task -> Bukkit.getAsyncScheduler().runNow(plugin, ignored -> task.run()),
+                player -> {
+                    if (plugin.isEnabled()) {
+                        player.getScheduler().run(plugin, ignored -> {
+                            if (player.isOnline()) {
+                                player.sendMessage(messages.component(player, "data-save-error"));
+                            }
+                        }, null);
+                    }
+                });
+    }
+
+    AsyncSaveService(PointStorage storage, Logger logger, Executor executor, Consumer<Player> failureNotifier) {
         this.storage = storage;
-        this.messages = messages;
+        this.logger = logger;
+        this.executor = executor;
+        this.failureNotifier = failureNotifier;
     }
 
     void requestSave(Player notifyPlayer) {
-        latestSnapshot = storage.snapshot();
-        latestNotifyPlayerId = notifyPlayer == null ? null : notifyPlayer.getUniqueId();
-        startWorkerIfNeeded();
-    }
+        long generation;
+        synchronized (monitor) {
+            if (retired) {
+                return;
+            }
+            requestedRevision++;
+            latestNotifyPlayer = notifyPlayer;
+            if (workerScheduled || writerRunning) {
+                return;
+            }
+            workerScheduled = true;
+            generation = ++workerGeneration;
+        }
 
-    boolean saveNow() {
-        PointStorageSnapshot snapshot = storage.snapshot();
         try {
-            storage.save(snapshot);
-            latestSnapshot = null;
-            return true;
-        } catch (StorageException exception) {
-            plugin.getLogger().log(Level.SEVERE, "Could not save VanillaPoints data.", exception);
-            return false;
+            executor.execute(() -> runWorker(generation));
+        } catch (RuntimeException exception) {
+            synchronized (monitor) {
+                if (workerScheduled && workerGeneration == generation) {
+                    workerScheduled = false;
+                    monitor.notifyAll();
+                }
+            }
+            logger.log(Level.SEVERE, "Could not schedule VanillaPoints data save; data remains pending.", exception);
         }
     }
 
-    boolean flush(long timeoutMillis) {
-        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
+    boolean saveNow() {
+        synchronized (monitor) {
+            if (retired) {
+                return false;
+            }
+            requestedRevision++;
+        }
+        return flush(Long.MAX_VALUE);
+    }
 
-        while (System.currentTimeMillis() <= deadline) {
-            if (!workerRunning.get()) {
-                PointStorageSnapshot pending = latestSnapshot;
-                if (pending == null) {
-                    return true;
-                }
-                try {
-                    storage.save(pending);
-                    if (latestSnapshot == pending) {
-                        latestSnapshot = null;
-                    }
-                    return true;
-                } catch (StorageException exception) {
-                    plugin.getLogger().log(Level.SEVERE, "Could not flush VanillaPoints data.", exception);
+    /**
+     * Stops accepting requests and saves even mutations made with immediate saving disabled.
+     * Queued scheduler callbacks become no-ops. Callers must quiesce mutations before shutdown,
+     * and must not close the storage unless this returns true.
+     */
+    boolean shutdown(long timeoutMillis) {
+        synchronized (monitor) {
+            if (!retired) {
+                retired = true;
+                requestedRevision++;
+            }
+            invalidateQueuedWorker();
+        }
+        return flush(timeoutMillis);
+    }
+
+    /** Retires an already-flushed service without another write. Callers must quiesce mutations first. */
+    boolean retireIfClean() {
+        synchronized (monitor) {
+            if (writerRunning || savedRevision != requestedRevision) {
+                return false;
+            }
+            retired = true;
+            latestNotifyPlayer = null;
+            invalidateQueuedWorker();
+            return true;
+        }
+    }
+
+    /**
+     * Waits for an active writer, or takes over a queued save synchronously. The timeout bounds
+     * waiting for another writer; storage I/O itself is bounded by the backend's I/O timeouts.
+     * Failed data stays dirty for the next request, explicit flush, or shutdown retry.
+     */
+    boolean flush(long timeoutMillis) {
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMillis));
+        long started = System.nanoTime();
+        synchronized (monitor) {
+            while (writerRunning) {
+                long remaining = timeoutNanos - (System.nanoTime() - started);
+                if (remaining <= 0L) {
+                    logger.severe("Timed out while flushing VanillaPoints data.");
                     return false;
                 }
-            }
-
-            synchronized (monitor) {
                 try {
-                    monitor.wait(Math.min(100L, Math.max(1L, deadline - System.currentTimeMillis())));
+                    TimeUnit.NANOSECONDS.timedWait(monitor, remaining);
                 } catch (InterruptedException exception) {
                     Thread.currentThread().interrupt();
                     return false;
                 }
             }
+            invalidateQueuedWorker();
+            if (savedRevision == requestedRevision) {
+                return true;
+            }
+            writerRunning = true;
         }
-
-        plugin.getLogger().severe("Timed out while flushing VanillaPoints data.");
-        return false;
+        return writePending();
     }
 
-    private void startWorkerIfNeeded() {
-        if (!workerRunning.compareAndSet(false, true)) {
-            return;
-        }
-
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::runWorker);
+    private void invalidateQueuedWorker() {
+        workerScheduled = false;
+        workerGeneration++;
     }
 
-    private void runWorker() {
+    private void runWorker(long generation) {
+        synchronized (monitor) {
+            if (!workerScheduled || generation != workerGeneration || retired) {
+                return;
+            }
+            workerScheduled = false;
+            writerRunning = true;
+        }
+        writePending();
+    }
+
+    private boolean writePending() {
+        boolean released = false;
         try {
             while (true) {
-                PointStorageSnapshot snapshot = latestSnapshot;
-                UUID notifyPlayerId = latestNotifyPlayerId;
-                if (snapshot == null) {
-                    return;
+                long revision;
+                Player notifyPlayer;
+                synchronized (monitor) {
+                    if (savedRevision == requestedRevision) {
+                        latestNotifyPlayer = null;
+                        // Release atomically with the clean check, so a new request cannot be stranded.
+                        writerRunning = false;
+                        released = true;
+                        monitor.notifyAll();
+                        return true;
+                    }
+                    revision = requestedRevision;
+                    notifyPlayer = latestNotifyPlayer;
                 }
 
                 try {
-                    storage.save(snapshot);
-                    if (latestSnapshot == snapshot) {
-                        latestSnapshot = null;
-                        latestNotifyPlayerId = null;
+                    storage.save(storage.snapshot());
+                } catch (RuntimeException exception) {
+                    logger.log(Level.SEVERE, "Could not save VanillaPoints data; data remains pending.", exception);
+                    notifySaveFailure(notifyPlayer);
+                    synchronized (monitor) {
+                        // Honor requests that arrived during the failed write, but never spin-retry
+                        // the same revision when a backend remains unavailable.
+                        if (!retired && requestedRevision != revision) {
+                            continue;
+                        }
+                        writerRunning = false;
+                        released = true;
+                        monitor.notifyAll();
+                        return false;
                     }
-                } catch (StorageException exception) {
-                    plugin.getLogger().log(Level.SEVERE, "Could not save VanillaPoints data.", exception);
-                    notifySaveFailure(notifyPlayerId);
-                    if (latestSnapshot == snapshot) {
-                        latestSnapshot = null;
-                        latestNotifyPlayerId = null;
-                    }
+                }
+
+                synchronized (monitor) {
+                    savedRevision = revision;
                 }
             }
         } finally {
-            workerRunning.set(false);
-            synchronized (monitor) {
-                monitor.notifyAll();
-            }
-            if (latestSnapshot != null) {
-                startWorkerIfNeeded();
+            if (!released) {
+                synchronized (monitor) {
+                    writerRunning = false;
+                    monitor.notifyAll();
+                }
             }
         }
     }
 
-    private void notifySaveFailure(UUID playerId) {
-        if (playerId == null || !plugin.isEnabled()) {
-            return;
-        }
-
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            Player player = Bukkit.getPlayer(playerId);
-            if (player != null && player.isOnline()) {
-                player.sendMessage(messages.component(player, "data-save-error"));
+    private void notifySaveFailure(Player player) {
+        synchronized (monitor) {
+            if (player == null || retired) {
+                return;
             }
-        });
+        }
+        try {
+            failureNotifier.accept(player);
+        } catch (RuntimeException exception) {
+            // A disconnect or plugin disable must not break dirty-state retention or writer release.
+            logger.log(Level.FINE, "Could not notify player about a VanillaPoints save failure.", exception);
+        }
     }
 }

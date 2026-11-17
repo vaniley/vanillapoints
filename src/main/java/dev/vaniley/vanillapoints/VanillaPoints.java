@@ -17,6 +17,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -32,6 +33,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -46,7 +51,11 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private static final String PERMISSION_WARP_PRIVATE = "vanillapoints.warp.private";
     private static final String DEFAULT_COPY_FORMAT = "{x} {y} {z}";
 
-    private final Map<UUID, PendingWarpDeletion> pendingWarpDeletions = new HashMap<>();
+    private final Map<UUID, PendingWarpDeletion> pendingWarpDeletions = new ConcurrentHashMap<>();
+    private final ReentrantReadWriteLock stateLock = new ReentrantReadWriteLock();
+    private final AtomicBoolean reloadQueued = new AtomicBoolean();
+    private final AtomicBoolean importQueued = new AtomicBoolean();
+    private List<String> cachedItemMaterialNames = List.of();
 
     private MessageService messages;
     private PointStorage storage;
@@ -62,21 +71,40 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     private boolean spawnPerWorld;
     private String copyFormat;
 
+    <T> T withState(Supplier<T> action) {
+        stateLock.readLock().lock();
+        try {
+            return action.get();
+        } finally {
+            stateLock.readLock().unlock();
+        }
+    }
+
+    PointService currentPoints() {
+        return points;
+    }
+
     MessageService messages() {
         return messages;
     }
 
     void clearPlayerState(UUID playerId) {
-        if (commandLimits != null) {
-            commandLimits.clear(playerId);
-        }
-        pendingWarpDeletions.remove(playerId);
+        withState(() -> {
+            if (commandLimits != null) {
+                commandLimits.clear(playerId);
+            }
+            pendingWarpDeletions.remove(playerId);
+            return null;
+        });
     }
 
     void notifyUpdate(Player player) {
-        if (updateChecker != null) {
-            updateChecker.notifyIfAdmin(player);
-        }
+        withState(() -> {
+            if (updateChecker != null) {
+                updateChecker.notifyIfAdmin(player);
+            }
+            return null;
+        });
     }
 
     @Override
@@ -90,6 +118,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
+
+        cachedItemMaterialNames = Stream.of(Material.values())
+                .filter(material -> material.isItem() && !material.isLegacy() && !material.isAir())
+                .map(material -> material.name().toLowerCase(Locale.ROOT))
+                .sorted()
+                .toList();
 
         registerCommand("setspawn");
         registerCommand("spawn");
@@ -125,9 +159,15 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public void onDisable() {
-        unregisterPlaceholderApi();
-        unregisterApi();
-        flushAndCloseStorage();
+        stateLock.writeLock().lock();
+        try {
+            unregisterPlaceholderApi();
+            unregisterApi();
+            flushAndCloseStorage();
+            pendingWarpDeletions.clear();
+        } finally {
+            stateLock.writeLock().unlock();
+        }
     }
 
     private void registerCommand(String name) {
@@ -142,8 +182,14 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private void loadPluginState() {
-        unregisterPlaceholderApi();
         reloadConfig();
+        // Validate the replacement before detaching the working storage and API.
+        PointStorage replacementStorage = PointStorageFactory.create(this);
+        if (saveService != null && !saveService.retireIfClean()) {
+            replacementStorage.close();
+            throw new StorageException("Existing storage still has pending writes; reload was cancelled.");
+        }
+        unregisterPlaceholderApi();
 
         saveImmediately = getConfig().getBoolean("settings.save-immediately", true);
         normalizeToBlock = getConfig().getBoolean("settings.normalize-to-block", true);
@@ -158,7 +204,6 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         commandLimits = new CommandLimitService(this, messages);
         feedback = new FeedbackService(this);
 
-        PointStorage replacementStorage = PointStorageFactory.create(this);
         closeStorageOnly();
         storage = replacementStorage;
         saveService = new AsyncSaveService(this, storage, messages);
@@ -203,19 +248,72 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     void reloadFromApi() {
-        if (!getServer().isPrimaryThread()) {
-            getServer().getScheduler().runTask(this, this::reloadFromApi);
-            return;
-        }
+        queueReload(null);
+    }
 
-        if (!flushBeforeReload()) {
+    private void queueReload(CommandSender sender) {
+        if (!isEnabled() || !reloadQueued.compareAndSet(false, true)) {
             return;
         }
-        loadPluginState();
+        try {
+            getServer().getGlobalRegionScheduler().run(this, task -> {
+                boolean success = false;
+                stateLock.writeLock().lock();
+                FileConfiguration previousConfig = getConfig();
+                try {
+                    if (isEnabled() && flushBeforeReload()) {
+                        loadPluginState();
+                        updateChecker = new UpdateChecker(this);
+                        updateChecker.checkAsync();
+                        success = true;
+                    }
+                } catch (StorageException exception) {
+                    // Keep live configuration consistent with the retained services after a failed replacement.
+                    FileConfiguration failedConfig = getConfig();
+                    for (String key : Set.copyOf(failedConfig.getKeys(false))) {
+                        failedConfig.set(key, null);
+                    }
+                    previousConfig.getValues(false).forEach(failedConfig::set);
+                    failedConfig.setDefaults(previousConfig.getDefaults());
+                    getLogger().log(Level.SEVERE, "Could not reload VanillaPoints storage; existing storage remains active.", exception);
+                } finally {
+                    stateLock.writeLock().unlock();
+                    reloadQueued.set(false);
+                }
+                if (sender != null) {
+                    sendOnSenderThread(sender, success ? "reload-complete" : "data-save-error");
+                }
+            });
+        } catch (RuntimeException exception) {
+            reloadQueued.set(false);
+            throw exception;
+        }
+    }
+
+    private void sendOnSenderThread(CommandSender sender, String key) {
+        sendOnSenderThread(sender, key, Map.of());
+    }
+
+    private void sendOnSenderThread(CommandSender sender, String key, Map<String, String> placeholders) {
+        if (!isEnabled()) {
+            return;
+        }
+        if (sender instanceof Player player) {
+            player.getScheduler().run(this, task -> withState(() -> {
+                player.sendMessage(messages.component(player, key, placeholders));
+                return null;
+            }), null);
+        } else {
+            sender.sendMessage(messages.component(sender, key, placeholders));
+        }
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        return withState(() -> executeCommand(sender, command, label, args));
+    }
+
+    private boolean executeCommand(CommandSender sender, Command command, String label, String[] args) {
         String commandName = command.getName().toLowerCase(Locale.ROOT);
 
         if (commandName.equals("vanillapoints")) {
@@ -291,6 +389,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        if (target == null) {
+            sender.sendMessage(messages.component(sender, "admin-player-unknown", Map.of("player", args[1])));
+            return true;
+        }
         Map<String, StoredPoint> homes = storage.homes(target.getUniqueId());
         if (homes.isEmpty()) {
             sender.sendMessage(messages.component(sender, "admin-homes-empty", Map.of("player", args[1])));
@@ -328,6 +430,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        if (target == null) {
+            sender.sendMessage(messages.component(sender, "admin-player-unknown", Map.of("player", args[1])));
+            return true;
+        }
         PointMutationResult result = points.deleteHome(sender, target.getUniqueId(), homeName);
         if (result == PointMutationResult.NOT_FOUND) {
             sender.sendMessage(messages.component(sender, "admin-homes-empty", Map.of("player", args[1])));
@@ -355,6 +461,10 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
         }
 
         OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        if (target == null) {
+            sender.sendMessage(messages.component(sender, "admin-player-unknown", Map.of("player", args[1])));
+            return true;
+        }
         Map<String, StoredPoint> homes = storage.homes(target.getUniqueId());
         if (homes.isEmpty()) {
             sender.sendMessage(messages.component(sender, "admin-homes-empty", Map.of("player", args[1])));
@@ -383,26 +493,58 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        EssentialsImporter.Result result = new EssentialsImporter(this, storage).importData();
-        if (result.homes() > 0 || result.warps() > 0) {
-            persistNow();
+        if (!importQueued.compareAndSet(false, true)) {
+            return true;
         }
-        sender.sendMessage(messages.component(sender, "admin-import-done", Map.of(
-                "homes", String.valueOf(result.homes()),
-                "warps", String.valueOf(result.warps())
-        )));
+        try {
+            getServer().getAsyncScheduler().runNow(this, task -> {
+                try {
+                    // Parse files off-thread without holding the live state lock.
+                    var imported = EssentialsImporter.readData(this);
+                    getServer().getGlobalRegionScheduler().run(this, mergeTask -> {
+                        stateLock.writeLock().lock();
+                        try {
+                            if (!isEnabled() || storage == null) {
+                                return;
+                            }
+                            imported.snapshot().homes().forEach((playerId, homes) ->
+                                    homes.forEach((name, point) -> storage.setHome(playerId, name, point)));
+                            imported.snapshot().warps().forEach(storage::setWarp);
+                            if (imported.result().homes() > 0 || imported.result().warps() > 0) {
+                                saveService.requestSave(null);
+                            }
+                        } finally {
+                            stateLock.writeLock().unlock();
+                            importQueued.set(false);
+                        }
+                        sendOnSenderThread(sender, "admin-import-done", Map.of(
+                                "homes", String.valueOf(imported.result().homes()),
+                                "warps", String.valueOf(imported.result().warps())));
+                    });
+                } catch (RuntimeException exception) {
+                    importQueued.set(false);
+                    getLogger().log(Level.SEVERE, "Could not import Essentials points.", exception);
+                    sendOnSenderThread(sender, "data-save-error");
+                }
+            });
+        } catch (RuntimeException exception) {
+            importQueued.set(false);
+            throw exception;
+        }
         return true;
-    }
-
-    private void persistNow() {
-        if (saveService != null && saveService.flush(10_000L)) {
-            saveService.saveNow();
-        }
     }
 
     private OfflinePlayer resolveOfflinePlayer(String name) {
         Player online = getServer().getPlayerExact(name);
-        return online != null ? online : getServer().getOfflinePlayer(name);
+        if (online != null) {
+            return online;
+        }
+        try {
+            return getServer().getOfflinePlayer(UUID.fromString(name));
+        } catch (IllegalArgumentException ignored) {
+            // Never perform a blocking Mojang profile lookup on a server region thread.
+            return getServer().getOfflinePlayerIfCached(name);
+        }
     }
 
     private boolean reloadPlugin(CommandSender sender) {
@@ -413,13 +555,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
             return true;
         }
 
-        if (!flushBeforeReload()) {
-            sender.sendMessage(messages.component(sender, "data-save-error"));
-            return true;
-        }
-
-        loadPluginState();
-        sender.sendMessage(messages.component(sender, "reload-complete"));
+        queueReload(sender);
         return true;
     }
 
@@ -582,8 +718,13 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
                 player.getUniqueId(),
                 homeName,
                 player.getLocation(),
-                new PointMetadata("", "", player.getName(), Instant.now().getEpochSecond())
+                new PointMetadata("", "", player.getName(), Instant.now().getEpochSecond()),
+                limit
         );
+        if (result == PointMutationResult.LIMIT_REACHED) {
+            player.sendMessage(messages.component(player, "home-limit-reached", Map.of("limit", homeLimitText(player, limit))));
+            return true;
+        }
         if (!handleMutationResult(player, result, null)) {
             return true;
         }
@@ -1033,22 +1174,28 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private Map<String, String> pointPlaceholders(Player player, StoredPoint point, Map<String, String> extraPlaceholders) {
+        Set<String> visibleLines = infoCardLines().stream()
+                .map(line -> line.toLowerCase(Locale.ROOT).trim())
+                .filter(line -> shouldShowInfoCardLine(line, point))
+                .collect(Collectors.toSet());
         Map<String, String> placeholders = new HashMap<>(extraPlaceholders);
         placeholders.put("x", String.valueOf(point.blockX()));
         placeholders.put("y", String.valueOf(point.blockY()));
         placeholders.put("z", String.valueOf(point.blockZ()));
         placeholders.put("world", point.worldName());
-        placeholders.put("biome", pointBiome(player, point));
-        placeholders.put("time", pointTime(player, point));
-        placeholders.put("weather", pointWeather(player, point));
+        placeholders.put("biome", visibleLines.contains("biome") ? pointBiome(player, point) : "");
+        placeholders.put("time", visibleLines.contains("time") ? pointTime(player, point) : "");
+        placeholders.put("weather", visibleLines.contains("weather") ? pointWeather(player, point) : "");
         placeholders.put("creator", point.createdBy());
-        placeholders.put("age", pointAge(player, point));
+        placeholders.put("age", visibleLines.contains("age") ? pointAge(player, point) : "");
         return placeholders;
     }
 
     private String pointBiome(Player player, StoredPoint point) {
         World world = getServer().getWorld(point.worldName());
-        if (world == null) {
+        if (world == null || !Bukkit.isOwnedByCurrentRegion(world, point.blockX() >> 4, point.blockZ() >> 4)
+                || !world.isChunkLoaded(point.blockX() >> 4, point.blockZ() >> 4)
+                || point.blockY() < world.getMinHeight() || point.blockY() >= world.getMaxHeight()) {
             return messages.text(player, "info-card-unknown");
         }
         Biome biome = world.getBiome(point.blockX(), point.blockY(), point.blockZ());
@@ -1072,7 +1219,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private String pointTime(Player player, StoredPoint point) {
         World world = getServer().getWorld(point.worldName());
-        if (world == null) {
+        if (world == null || !Bukkit.isOwnedByCurrentRegion(world, point.blockX() >> 4, point.blockZ() >> 4)) {
             return messages.text(player, "info-card-unknown");
         }
         long ticks = world.getTime();
@@ -1083,7 +1230,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private String pointWeather(Player player, StoredPoint point) {
         World world = getServer().getWorld(point.worldName());
-        if (world == null) {
+        if (world == null || !Bukkit.isOwnedByCurrentRegion(world, point.blockX() >> 4, point.blockZ() >> 4)) {
             return messages.text(player, "info-card-unknown");
         }
         if (world.hasStorm()) {
@@ -1210,10 +1357,12 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     private void flushAndCloseStorage() {
         if (saveService != null) {
-            if (saveService.flush(10_000L)) {
-                saveService.saveNow();
+            if (!saveService.shutdown(10_000L)) {
+                // Never close a connection underneath a writer which exceeded the wait timeout.
+                getLogger().severe("Could not finish VanillaPoints shutdown save. Storage remains open to protect the active writer.");
+                points = null;
+                return;
             }
-            saveService = null;
         } else if (storage != null) {
             try {
                 storage.save(storage.snapshot());
@@ -1241,13 +1390,17 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        return withState(() -> completeCommand(sender, command, args));
+    }
+
+    private List<String> completeCommand(CommandSender sender, Command command, String[] args) {
         String commandName = command.getName().toLowerCase(Locale.ROOT);
 
         if (commandName.equals("vanillapoints")) {
             return completePluginCommand(sender, args);
         }
         if (commandName.equals("setwarp")) {
-            return completeSetWarp(args);
+            return sender.hasPermission(PERMISSION_SETWARP) ? completeSetWarp(args) : List.of();
         }
         if (commandName.equals("warp")) {
             return completeWarpNames(sender, args);
@@ -1299,10 +1452,7 @@ public final class VanillaPoints extends JavaPlugin implements CommandExecutor, 
     }
 
     private List<String> itemMaterialNames() {
-        return Stream.of(Material.values())
-                .filter(material -> material.isItem() && !material.isLegacy() && !material.isAir())
-                .map(material -> material.name().toLowerCase(Locale.ROOT))
-                .collect(Collectors.toCollection(ArrayList::new));
+        return cachedItemMaterialNames;
     }
 
     private List<String> completeWarpNames(CommandSender sender, String[] args) {

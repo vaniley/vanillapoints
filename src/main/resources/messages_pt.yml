@@ -94,3 +94,5 @@ admin-purge-usage: '&cUso: /vp purge <player>'
 admin-purge-done: '&fPurgado &a{count} &fcasas de &e{player}&f.'
 admin-import-usage: '&cUso: /vp import essentials'
 admin-import-done: '&aImportação concluída: &f{homes} &acasas e &f{warps} &aurdiduras importadas.'
+
+admin-player-unknown: '&cJogador desconhecido: {player}. Use um nome em cache ou um UUID.'

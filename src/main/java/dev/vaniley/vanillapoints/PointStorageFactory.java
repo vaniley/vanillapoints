@@ -20,11 +20,22 @@ final class PointStorageFactory {
             default -> throw new StorageException("Unknown storage backend: " + backend);
         };
 
-        storage.load();
-        if (!normalizedBackend.equals("yaml") && plugin.getConfig().getBoolean("storage.migrate-yaml-on-first-run", true)) {
-            migrateYamlIfNeeded(plugin, storage);
+        try {
+            storage.load();
+            if (!normalizedBackend.equals("yaml") && plugin.getConfig().getBoolean("storage.migrate-yaml-on-first-run", true)) {
+                migrateYamlIfNeeded(plugin, storage);
+            }
+            return storage;
+        } catch (RuntimeException | Error exception) {
+            try {
+                storage.close();
+            } catch (RuntimeException | Error closeException) {
+                if (closeException != exception) {
+                    exception.addSuppressed(closeException);
+                }
+            }
+            throw exception;
         }
-        return storage;
     }
 
     private static void migrateYamlIfNeeded(JavaPlugin plugin, PointStorage targetStorage) {

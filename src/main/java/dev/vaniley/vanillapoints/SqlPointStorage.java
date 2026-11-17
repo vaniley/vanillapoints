@@ -30,7 +30,8 @@ abstract class SqlPointStorage extends AbstractPointStorage {
     }
 
     @Override
-    public final void load() throws StorageException {
+    public final synchronized void load() throws StorageException {
+        closeDataSource();
         try {
             loadDriver();
             dataSource = createDataSource();
@@ -40,7 +41,7 @@ abstract class SqlPointStorage extends AbstractPointStorage {
                 persistedSnapshot = readSnapshot(connection);
                 replace(persistedSnapshot);
             }
-        } catch (ReflectiveOperationException | SQLException exception) {
+        } catch (ReflectiveOperationException | SQLException | RuntimeException exception) {
             closeDataSource();
             throw new StorageException("Could not load " + backendName() + " storage", exception);
         }
@@ -48,6 +49,9 @@ abstract class SqlPointStorage extends AbstractPointStorage {
 
     @Override
     public final synchronized void save(PointStorageSnapshot snapshot) throws StorageException {
+        if (dataSource == null || dataSource.isClosed()) {
+            throw new StorageException("Cannot save " + backendName() + " storage while it is closed");
+        }
         Map<PointKey, StoredPoint> before = flatten(persistedSnapshot);
         Map<PointKey, StoredPoint> after = flatten(snapshot);
         List<PointKey> deletions = new ArrayList<>();
@@ -74,7 +78,11 @@ abstract class SqlPointStorage extends AbstractPointStorage {
                 connection.commit();
                 persistedSnapshot = snapshot;
             } catch (SQLException exception) {
-                connection.rollback();
+                try {
+                    connection.rollback();
+                } catch (SQLException rollbackException) {
+                    exception.addSuppressed(rollbackException);
+                }
                 throw exception;
             } finally {
                 connection.setAutoCommit(true);
@@ -85,7 +93,7 @@ abstract class SqlPointStorage extends AbstractPointStorage {
     }
 
     @Override
-    public final void close() {
+    public final synchronized void close() {
         closeDataSource();
     }
 

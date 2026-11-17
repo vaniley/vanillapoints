@@ -6,6 +6,7 @@ import org.bukkit.World;
 
 import java.util.Optional;
 
+/** Immutable coordinate/metadata snapshot, safe to read on any thread. */
 public record PointInfo(
         String worldName,
         double x,
@@ -61,7 +62,17 @@ public record PointInfo(
         return (int) Math.floor(z);
     }
 
+    /**
+     * Resolves the currently loaded world without loading a chunk or teleporting anything.
+     * Call only on a Paper main thread or a Folia region/global tick thread. The returned
+     * location grants no permission to access its region's chunks or entities.
+     *
+     * @throws IllegalStateException if called from an asynchronous worker
+     */
     public Optional<Location> toLocation() {
+        if (!Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("Location conversion requires a server tick thread (Paper main, Folia region or global)");
+        }
         World world = Bukkit.getWorld(worldName);
         if (world == null) {
             return Optional.empty();

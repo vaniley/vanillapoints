@@ -94,3 +94,5 @@ admin-purge-usage: '&cВикористання: /vp purge <player>'
 admin-purge-done: '&fОчищено &a{count} &fбудинки с &e{player}&f.'
 admin-import-usage: '&cВикористання: /vp import essentials'
 admin-import-done: '&aІмпорт завершено: &f{homes} &aбудинки і &f{warps} &aоснови імпортні.'
+
+admin-player-unknown: '&cГравець {player} невідомий. Укажіть ім’я гравця з кешу або UUID.'

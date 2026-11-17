@@ -92,3 +92,5 @@ admin-purge-usage: '&cUsage: /vp purge <player>'
 admin-purge-done: '&fPurged &a{count} &fhomes from &e{player}&f.'
 admin-import-usage: '&cUsage: /vp import essentials'
 admin-import-done: '&aImport complete: &f{homes} &ahomes and &f{warps} &awarps imported.'
+
+admin-player-unknown: '&cUnknown player {player}. Use a cached player name or a UUID.'

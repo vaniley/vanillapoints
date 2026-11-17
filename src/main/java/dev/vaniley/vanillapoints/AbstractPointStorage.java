@@ -14,6 +14,7 @@ abstract class AbstractPointStorage implements PointStorage {
     private Map<String, StoredPoint> spawns = new HashMap<>();
     private Map<UUID, Map<String, StoredPoint>> homes = new HashMap<>();
     private Map<String, StoredPoint> warps = new HashMap<>();
+    private PointStorageSnapshot cachedSnapshot = PointStorageSnapshot.empty();
 
     private static String spawnKey(String worldName) {
         return worldName == null ? PointStorageSnapshot.GLOBAL_SPAWN_KEY : worldName.toLowerCase(Locale.ROOT);
@@ -30,6 +31,7 @@ abstract class AbstractPointStorage implements PointStorage {
     public void setSpawn(StoredPoint point) {
         synchronized (lock) {
             spawns.put(PointStorageSnapshot.GLOBAL_SPAWN_KEY, point);
+            cachedSnapshot = null;
         }
     }
 
@@ -44,13 +46,18 @@ abstract class AbstractPointStorage implements PointStorage {
     public void setSpawn(String worldName, StoredPoint point) {
         synchronized (lock) {
             spawns.put(spawnKey(worldName), point);
+            cachedSnapshot = null;
         }
     }
 
     @Override
     public boolean deleteSpawn(String worldName) {
         synchronized (lock) {
-            return spawns.remove(spawnKey(worldName)) != null;
+            boolean removed = spawns.remove(spawnKey(worldName)) != null;
+            if (removed) {
+                cachedSnapshot = null;
+            }
+            return removed;
         }
     }
 
@@ -89,6 +96,7 @@ abstract class AbstractPointStorage implements PointStorage {
     public void setHome(UUID playerId, String name, StoredPoint point) {
         synchronized (lock) {
             homes.computeIfAbsent(playerId, ignored -> new HashMap<>()).put(PointStorage.normalizeHomeName(name), point);
+            cachedSnapshot = null;
         }
     }
 
@@ -102,6 +110,7 @@ abstract class AbstractPointStorage implements PointStorage {
             if (playerHomes.isEmpty()) {
                 homes.remove(playerId);
             }
+            cachedSnapshot = null;
             return true;
         }
     }
@@ -124,13 +133,18 @@ abstract class AbstractPointStorage implements PointStorage {
     public void setWarp(String name, StoredPoint point) {
         synchronized (lock) {
             warps.put(PointStorage.normalizeWarpName(name), point);
+            cachedSnapshot = null;
         }
     }
 
     @Override
     public boolean deleteWarp(String name) {
         synchronized (lock) {
-            return warps.remove(PointStorage.normalizeWarpName(name)) != null;
+            boolean removed = warps.remove(PointStorage.normalizeWarpName(name)) != null;
+            if (removed) {
+                cachedSnapshot = null;
+            }
+            return removed;
         }
     }
 
@@ -144,9 +158,11 @@ abstract class AbstractPointStorage implements PointStorage {
     @Override
     public PointStorageSnapshot snapshot() {
         synchronized (lock) {
-            Map<UUID, Map<String, StoredPoint>> homesCopy = new HashMap<>();
-            homes.forEach((playerId, playerHomes) -> homesCopy.put(playerId, new HashMap<>(playerHomes)));
-            return new PointStorageSnapshot(new HashMap<>(spawns), homesCopy, new HashMap<>(warps));
+            if (cachedSnapshot == null) {
+                // The snapshot constructor already takes a deep immutable copy under this lock.
+                cachedSnapshot = new PointStorageSnapshot(spawns, homes, warps);
+            }
+            return cachedSnapshot;
         }
     }
 
@@ -157,6 +173,7 @@ abstract class AbstractPointStorage implements PointStorage {
             homes = new HashMap<>();
             snapshot.homes().forEach((playerId, playerHomes) -> homes.put(playerId, new HashMap<>(playerHomes)));
             warps = new HashMap<>(snapshot.warps());
+            cachedSnapshot = snapshot;
         }
     }
 }

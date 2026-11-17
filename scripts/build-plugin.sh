@@ -13,8 +13,9 @@ Usage:
   scripts/build-plugin.sh [--clean] [--plugins-dir PATH]
   PLUGINS_DIR=/path/to/server/plugins scripts/build-plugin.sh
 
-Builds the Paper plugin jar with Maven. If a plugins directory is provided,
-the built jar is copied there for quick local server testing.
+Runs the full Maven verification lifecycle (including tests) and builds the
+Paper/Folia plugin jar. Requires JDK 21+; respects JAVA_HOME. If a plugins
+directory is provided, the verified jar is copied there for local testing.
 USAGE
 }
 
@@ -53,35 +54,53 @@ else
     exit 127
 fi
 
-if ! command -v javac >/dev/null 2>&1; then
-    cat >&2 <<'ERROR'
-Java is installed, but javac was not found.
+if [[ -n "${JAVA_HOME:-}" ]]; then
+    if [[ ! -x "$JAVA_HOME/bin/java" || ! -x "$JAVA_HOME/bin/javac" ]]; then
+        echo "JAVA_HOME must point to a JDK with bin/java and bin/javac." >&2
+        exit 127
+    fi
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
 
-Install JDK 25 or newer, not only a Java runtime, then run this script again.
+if ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; then
+    cat >&2 <<'ERROR'
+Java and javac are both required to build VanillaPoints.
+
+Install JDK 21 or newer, not only a Java runtime, then run this script again.
+Set JAVA_HOME to that JDK when multiple Java versions are installed.
 ERROR
     exit 127
 fi
 
 JAVAC_MAJOR="$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)"
-if [[ ! "$JAVAC_MAJOR" =~ ^[0-9]+$ ]] || (( JAVAC_MAJOR < 25 )); then
-    printf 'VanillaPoints for Paper 26.2 requires JDK 25 or newer (found javac %s).\n' \
+if [[ ! "$JAVAC_MAJOR" =~ ^[0-9]+$ ]] || (( JAVAC_MAJOR < 21 )); then
+    printf 'Building VanillaPoints requires JDK 21 or newer (found %s).\n' \
         "$(javac -version 2>&1)" >&2
     exit 1
 fi
 
-GOALS=(package)
+GOALS=(verify)
 if [[ "$CLEAN" -eq 1 ]]; then
-    GOALS=(clean package)
+    GOALS=(clean verify)
 fi
 
-"$MVN" -DskipTests "${GOALS[@]}"
+"$MVN" --batch-mode --no-transfer-progress -Dstyle.color=never "${GOALS[@]}"
 
-JAR_PATH="$(find "$ROOT_DIR/target" -maxdepth 1 -type f -name '*.jar' ! -name 'original-*.jar' | sort | tail -n 1)"
+JARS=()
+shopt -s nullglob
+for candidate in "$ROOT_DIR"/target/*.jar; do
+    case "$(basename "$candidate")" in
+        original-*|*-sources.jar|*-javadoc.jar|*-tests.jar) continue ;;
+    esac
+    JARS+=("$candidate")
+done
 
-if [[ -z "$JAR_PATH" ]]; then
-    echo "Build completed, but no plugin jar was found in target/." >&2
+if [[ "${#JARS[@]}" -ne 1 ]]; then
+    printf 'Expected one plugin jar in target/, found %s. Re-run with --clean to remove stale builds.\n' \
+        "${#JARS[@]}" >&2
     exit 1
 fi
+JAR_PATH="${JARS[0]}"
 
 echo "Built: $JAR_PATH"
 

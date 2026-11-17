@@ -11,6 +11,7 @@ import java.sql.Statement;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SqlPointStorageTest {
@@ -60,6 +61,47 @@ class SqlPointStorageTest {
             assertTrue(result.next());
             assertEquals(1, result.getInt(1));
         }
+    }
+
+    @Test
+    void failedTransactionRollsBackAndCanRetryTheSameSnapshot() throws Exception {
+        String url = "jdbc:sqlite:" + tempDir.resolve("retry.db");
+        try (TestSqlStorage storage = new TestSqlStorage(url)) {
+            storage.load();
+            storage.setWarp("shop", point(1));
+            storage.save(storage.snapshot());
+            storage.setWarp("shop", point(2));
+            PointStorageSnapshot pending = storage.snapshot();
+            try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+                statement.executeUpdate("CREATE TRIGGER reject_points BEFORE INSERT ON vanillapoints_points "
+                        + "BEGIN SELECT RAISE(ABORT, 'test failure'); END");
+            }
+
+            assertThrows(StorageException.class, () -> storage.save(pending));
+            try (Connection connection = DriverManager.getConnection(url); Statement statement = connection.createStatement()) {
+                try (ResultSet result = statement.executeQuery("SELECT x FROM vanillapoints_points WHERE point_name = 'shop'")) {
+                    assertTrue(result.next());
+                    assertEquals(1, result.getDouble(1));
+                }
+                statement.executeUpdate("DROP TRIGGER reject_points");
+            }
+            storage.save(pending);
+        }
+
+        try (TestSqlStorage reloaded = new TestSqlStorage(url)) {
+            reloaded.load();
+            assertEquals(point(2), reloaded.warp("shop").orElseThrow());
+        }
+    }
+
+    @Test
+    void savingBeforeLoadOrAfterCloseFailsExplicitly() {
+        TestSqlStorage storage = new TestSqlStorage("jdbc:sqlite:" + tempDir.resolve("closed.db"));
+        assertThrows(StorageException.class, () -> storage.save(PointStorageSnapshot.empty()));
+        storage.load();
+        storage.close();
+        assertThrows(StorageException.class, () -> storage.save(PointStorageSnapshot.empty()));
+        storage.close();
     }
 
     private StoredPoint point(double x) {

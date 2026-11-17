@@ -44,12 +44,12 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
 
     @Override
     public String onRequest(OfflinePlayer player, String params) {
-        return request(player, player != null && player.isOnline() ? player.getPlayer() : null, params);
+        return plugin.withState(() -> request(player, player != null && player.isOnline() ? player.getPlayer() : null, params));
     }
 
     @Override
     public String onPlaceholderRequest(Player player, String params) {
-        return request(player, player, params);
+        return plugin.withState(() -> request(player, player, params));
     }
 
     private String request(OfflinePlayer offlinePlayer, Player player, String params) {
@@ -141,7 +141,7 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
     }
 
     private String distanceToHome(Player player) {
-        if (player == null || !Bukkit.isPrimaryThread()) {
+        if (player == null || !Bukkit.isOwnedByCurrentRegion(player)) {
             return emptyValue();
         }
 
@@ -159,7 +159,7 @@ final class PlaceholderApiIntegration extends PlaceholderExpansion {
     }
 
     private String bearingToHome(Player player) {
-        if (player == null || !Bukkit.isPrimaryThread()) {
+        if (player == null || !Bukkit.isOwnedByCurrentRegion(player)) {
             return emptyValue();
         }
 

@@ -1,0 +1,76 @@
+name: Build and verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: JDK ${{ matrix.java }} / Java 21 bytecode
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['21', '25']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Verify messages and build helper
+        run: |
+          scripts/check-message-keys.sh
+          bash scripts/tests/build-plugin-test.sh
+      - name: Test and package
+        run: scripts/build-plugin.sh --clean
+      - name: Check packaged compatibility contract
+        shell: python
+        run: |
+          import pathlib
+          import struct
+          import xml.etree.ElementTree as ET
+          import zipfile
+
+          pom = ET.parse('pom.xml')
+          ns = {'m': 'http://maven.apache.org/POM/4.0.0'}
+          version = pom.findtext('m:version', namespaces=ns)
+          properties = pom.find('m:properties', ns)
+          jars = [p for p in pathlib.Path('target').glob('*.jar') if not p.name.startswith('original-')]
+          assert len(jars) == 1, jars
+          with zipfile.ZipFile(jars[0]) as jar:
+              metadata = jar.read('plugin.yml').decode()
+              assert "api-version: '1.21.11'" in metadata, metadata
+              assert 'folia-supported: true' in metadata, metadata
+              assert f'version: {version}' in metadata, metadata
+              for coordinate, key in [('org.xerial:sqlite-jdbc', 'sqlite.version'), ('com.mysql:mysql-connector-j', 'mysql.version'), ('com.zaxxer:HikariCP', 'hikari.version')]:
+                  dependency_version = properties.findtext(f'm:{key}', namespaces=ns)
+                  assert f'{coordinate}:{dependency_version}' in metadata, metadata
+              assert '${' not in metadata, metadata
+              classes = [name for name in jar.namelist() if name.startswith('dev/vaniley/vanillapoints/') and name.endswith('.class')]
+              assert classes
+              assert struct.unpack('>H', jar.read('dev/vaniley/vanillapoints/VanillaPoints.class')[6:8])[0] == 65
+              for name in classes:
+                  major = struct.unpack('>H', jar.read(name)[6:8])[0]
+                  assert major <= 65, (name, major)
+              assert not any(name.startswith(('org/bukkit/', 'io/papermc/', 'org/mockito/', 'org/junit/', 'org/opentest4j/', 'net/bytebuddy/', 'org/sqlite/', 'com/mysql/', 'com/zaxxer/')) for name in jar.namelist())
+      - name: Verify reproducible packaging
+        run: |
+          sha256sum target/vanillapoints-*.jar > "$RUNNER_TEMP/vanillapoints.sha256"
+          scripts/build-plugin.sh --clean
+          sha256sum --check "$RUNNER_TEMP/vanillapoints.sha256"
+          (cd target && sha256sum vanillapoints-*.jar > SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vanillapoints-jdk-${{ matrix.java }}
+          path: |
+            target/vanillapoints-*.jar
+            target/SHA256SUMS
+          if-no-files-found: error

@@ -94,3 +94,5 @@ admin-purge-usage: '&cИспользование: /vp purge <игрок>'
 admin-purge-done: '&fУдалено домов игрока &e{player}&f: &a{count}&f.'
 admin-import-usage: '&cИспользование: /vp import essentials'
 admin-import-done: '&aИмпорт завершён: домов — &f{homes}&a, варпов — &f{warps}&a.'
+
+admin-player-unknown: '&cИгрок {player} неизвестен. Укажите имя игрока из кеша или UUID.'
